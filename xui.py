@@ -643,7 +643,6 @@ def check_environment(template_mode):
     def is_in_china():
         print("\n    - 正在通过 ping google.com 检测网络环境...")
         try:
-            # 修复: 将全角逗号 '，' 改为半角逗号 ','
             result = subprocess.run(["ping", "-c", "1", "-W", "2", "google.com"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if result.returncode == 0: print("    - ✅ Ping 成功，判断为海外服务器。"); return False
             else: print("    - ⚠️  Ping 超时或失败，判断为国内服务器，将自动使用镜像。"); return True
@@ -665,7 +664,6 @@ def check_environment(template_mode):
     ping_package = "iputils-ping" if pkg_manager == "apt-get" else "iputils"; iproute_package = "iproute2" if pkg_manager == "apt-get" else "iproute"
     ensure_packages(pkg_manager, ["curl", ping_package, iproute_package, "nmap", "masscan", "ca-certificates", "tar"])
     in_china = is_in_china()
-    # 修复: 'pyyaml' 模块在import时名称为 'yaml'
     required_py_modules = {'requests': 'requests', 'psutil': 'psutil', 'openpyxl': 'openpyxl', 'yaml': 'pyyaml', 'tqdm': 'tqdm', 'colorama': 'colorama'}
     missing_modules_import = []; missing_modules_install = []
     for import_name, install_name in required_py_modules.items():
