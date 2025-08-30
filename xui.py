@@ -645,14 +645,9 @@ def check_environment(template_mode):
     def is_in_china():
         print("\n    - 正在通过 ping google.com 检测网络环境...")
         try:
-            # 最终修复: 确保所有参数都是半角字符
+            # 最终修复: 确保所有参数都是半角字符, 并且重构代码
             command = ["ping", "-c", "1", "-W", "2", "google.com"]
-            result = subprocess.run(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False
-            )
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if result.returncode == 0:
                 print("    - ✅ Ping 成功, 判断为海外服务器。")
                 return False
@@ -995,3 +990,4 @@ if __name__ == "__main__":
             files_to_send = [f for f in [final_txt_file, final_xlsx_file] if os.path.exists(f) and f]
             for f in files_to_send:
                 print(f"\n📤 正在将 {f} 上传至 Telegram ..."); send_to_telegram(f, BOT_TOKEN, CHAT_ID, vps_ip, vps_country, nezha_server, total_ips, run_time_str)
+
