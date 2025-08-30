@@ -636,14 +636,15 @@ def check_environment(template_mode):
     def run_cmd(cmd, check=True, quiet=False, extra_env=None):
         env = os.environ.copy()
         if extra_env: env.update(extra_env)
-        stdout = subprocess.DEVNULL if quiet else 无; stderr = subprocess.DEVNULL if quiet else None
+        stdout = subprocess.DEVNULL if quiet else None; stderr = subprocess.DEVNULL if quiet else None
         try: subprocess.run(cmd, check=check, stdout=stdout, stderr=stderr, env=env)
         except FileNotFoundError: print(f"❌ 命令未找到: {cmd[0]}。请确保该命令在您的系统PATH中。"); raise
 
     def is_in_china():
         print("\n    - 正在通过 ping google.com 检测网络环境...")
         try:
-            result = subprocess.run(["ping"， "-c"， "1"， "-W", "2", "google.com"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            # 修复: 将全角逗号 '，' 改为半角逗号 ','
+            result = subprocess.run(["ping", "-c", "1", "-W", "2", "google.com"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if result.returncode == 0: print("    - ✅ Ping 成功，判断为海外服务器。"); return False
             else: print("    - ⚠️  Ping 超时或失败，判断为国内服务器，将自动使用镜像。"); return True
         except FileNotFoundError: print("    - ⚠️  未找到 ping 命令，无法检测网络。将使用默认源。"); return False
@@ -662,19 +663,19 @@ def check_environment(template_mode):
             run_cmd([pm, "install", "-y"] + packages, quiet=True); print(" 完成")
         except Exception as e: print(f" 失败: {e}"); sys.exit(1)
     ping_package = "iputils-ping" if pkg_manager == "apt-get" else "iputils"; iproute_package = "iproute2" if pkg_manager == "apt-get" else "iproute"
-    ensure_packages(pkg_manager, ["curl", ping_package, iproute_package, "nmap"， "masscan", "ca-certificates"， "tar"])
+    ensure_packages(pkg_manager, ["curl", ping_package, iproute_package, "nmap", "masscan", "ca-certificates", "tar"])
     in_china = is_in_china()
     # 修复: 'pyyaml' 模块在import时名称为 'yaml'
     required_py_modules = {'requests': 'requests', 'psutil': 'psutil', 'openpyxl': 'openpyxl', 'yaml': 'pyyaml', 'tqdm': 'tqdm', 'colorama': 'colorama'}
     missing_modules_import = []; missing_modules_install = []
-    for import_name, install_name 在 required_py_modules.items():
+    for import_name, install_name in required_py_modules.items():
         try: __import__(import_name)
         except ImportError: missing_modules_import.append(import_name); missing_modules_install.append(install_name)
     if missing_modules_import:
-        print(f"    - 检测到缺失的 Python 模块: {', '。join(missing_modules_import)}"); sys.stdout.write("    - 正在尝试使用 pip 自动安装..."); sys.stdout.flush()
+        print(f"    - 检测到缺失的 Python 模块: {', '.join(missing_modules_import)}"); sys.stdout.write("    - 正在尝试使用 pip 自动安装..."); sys.stdout.flush()
         try:
             pip_help = subprocess.check_output([sys.executable, "-m", "pip", "install", "--help"], text=True, stderr=subprocess.DEVNULL)
-            use_break = "--break-system-packages" 在 pip_help; pip_cmd = [sys.executable， "-m"， "pip", "install"]
+            use_break = "--break-system-packages" in pip_help; pip_cmd = [sys.executable, "-m", "pip", "install"]
             if in_china: pip_cmd.extend(["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"])
             if use_break: pip_cmd.append("--break-system-packages")
             pip_cmd.extend(missing_modules_install); run_cmd(pip_cmd, quiet=True); print(" 完成")
@@ -686,18 +687,18 @@ def check_environment(template_mode):
 
     if pkg_manager == "apt-get": sys.stdout.write("    - 正在更新CA证书..."); sys.stdout.flush(); run_cmd(["update-ca-certificates"], quiet=True); print(" 完成")
     def get_go_version():
-        if not os.path.exists(GO_EXEC): return 无
+        if not os.path.exists(GO_EXEC): return None
         try:
             out = subprocess.check_output([GO_EXEC, "version"], stderr=subprocess.DEVNULL).decode(); m = re.search(r"go(\d+)\.(\d+)", out)
             return (int(m.group(1)), int(m.group(2))) if m else None
-        except: return 无
+        except: return None
     if not (get_go_version() and get_go_version() >= (1, 20)):
-        print("--- ⚠️ Go环境不满足，正在自动安装... ---"); urls = ["https://studygolang.com/dl/golang/go1.22.1.linux-amd64.tar.gz"， "https://go.dev/dl/go1.22.1.linux-amd64.tar.gz"]
+        print("--- ⚠️ Go环境不满足，正在自动安装... ---"); urls = ["https://studygolang.com/dl/golang/go1.22.1.linux-amd64.tar.gz", "https://go.dev/dl/go1.22.1.linux-amd64.tar.gz"]
         if not in_china: urls.reverse()
-        GO_TAR_PATH, download_success = "/tmp/go.tar.gz"， False
+        GO_TAR_PATH, download_success = "/tmp/go.tar.gz", False
         for url in urls:
             print(f"    - 正在从 {url.split('/')[2]} 下载Go...")
-            try: subprocess.run(["curl"， "-#", "-Lo", GO_TAR_PATH, url], check=True); download_success = True; break
+            try: subprocess.run(["curl", "-#", "-Lo", GO_TAR_PATH, url], check=True); download_success = True; break
             except Exception: print("      下载失败，尝试下一个源...")
         if not download_success: print("❌ Go安装包下载失败，请检查网络。"); sys.exit(1)
         sys.stdout.write("    - 正在解压Go安装包..."); sys.stdout.flush()
@@ -705,13 +706,13 @@ def check_environment(template_mode):
         except Exception as e: print(f" 失败: {e}"); sys.exit(1)
         os.environ["PATH"] = "/usr/local/go/bin:" + os.environ["PATH"]
     go_env = os.environ.copy()
-    if 'HOME' not 在 go_env: go_env['HOME'] = '/tmp'
+    if 'HOME' not in go_env: go_env['HOME'] = '/tmp'
     if 'GOCACHE' not in go_env: go_env['GOCACHE'] = '/tmp/.cache/go-build'
     if in_china: go_env['GOPROXY'] = 'https://goproxy.cn,direct'
-    if not os.path.exists("go.mod"): run_cmd([GO_EXEC, "mod", "init"， "xui"], quiet=True, extra_env=go_env)
+    if not os.path.exists("go.mod"): run_cmd([GO_EXEC, "mod", "init", "xui"], quiet=True, extra_env=go_env)
     required_pkgs = []
     if template_mode == 6: required_pkgs.append("golang.org/x/crypto/ssh")
-    if template_mode 在 [9， 10， 11]: required_pkgs.append("golang.org/x/net/proxy")
+    if template_mode in [9, 10, 11]: required_pkgs.append("golang.org/x/net/proxy")
     if required_pkgs:
         sys.stdout.write("    - 正在安装Go模块..."); sys.stdout.flush()
         for pkg in required_pkgs:
@@ -833,7 +834,6 @@ if __name__ == "__main__":
     from datetime import datetime, timedelta, timezone
     beijing_time = datetime.now(timezone.utc) + timedelta(hours=8); time_str = beijing_time.strftime("%Y%m%d-%H%M")
     
-    # 修复: 提前定义变量，以防脚本在 try 块中提前退出
     final_txt_file = ""; final_xlsx_file = ""
     total_ips = 0
 
@@ -842,7 +842,6 @@ if __name__ == "__main__":
         mode_map = {1: "XUI", 2: "哪吒", 6: "ssh", 7: "substore", 8: "OpenWrt", 9: "SOCKS5", 10: "HTTP", 11: "HTTPS", 12: "Alist"}
         prefix = mode_map.get(TEMPLATE_MODE, "result")
         
-        # 修复: 在 try 块内部定义，以便在 finally 中可用
         final_txt_file = f"{prefix}-{time_str}.txt"
         final_xlsx_file = f"{prefix}-{time_str}.xlsx"
 
