@@ -645,13 +645,9 @@ def check_environment(template_mode):
     def is_in_china():
         print("\n    - 正在通过 ping google.com 检测网络环境...")
         try:
+            # 最终修复: 彻底重写此部分, 确保所有字符均为半角
             command = ["ping", "-c", "1", "-W", "2", "google.com"]
-            result = subprocess.run(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False
-            )
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if result.returncode == 0:
                 print("    - ✅ Ping 成功, 判断为海外服务器。")
                 return False
