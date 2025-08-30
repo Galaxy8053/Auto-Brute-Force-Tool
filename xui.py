@@ -2281,47 +2281,48 @@ def run_nmap_prescan(all_unique_ips, ports_str, ip_port_to_original_line):
         
     return filtered_lines
 
-
+# ==================== 全新版本：run_masscan_prescan (精确测试) ====================
 def run_masscan_prescan(source_lines, masscan_rate):
     """
-    使用 Masscan 预扫描目标，并仅返回端口开放的原始行。
+    修改版：使用 Masscan 精确预扫描每个 IP:Port 对，而不是进行交叉扫描。
     """
-    print("\n--- 正在执行 Masscan 预扫描以筛选活性IP... ---")
+    print("\n--- 正在执行 Masscan 预扫描 (精确模式) 以筛选活性IP:Port... ---")
 
     if not shutil.which("masscan"):
         print("  - ❌ 命令 'masscan' 未找到或不可执行。请确保已正确安装 Masscan。")
         print("  - 跳过预扫描，将继续对所有原始目标进行扫描。")
         return source_lines
     
-    # 1. 解析和分离
-    ip_targets = {}
+    # 1. 解析和准备输入文件 (全新逻辑)
+    masscan_input_file = "masscan_prescan_input.tmp"
     domain_lines = []
     ip_port_to_original_line = {}
+    lines_to_scan_count = 0
 
-    for line in source_lines:
-        host, port = parse_ip_port_from_line(line.strip())
-        if host and port:
-            if is_valid_ip(host):
-                if port not in ip_targets:
-                    ip_targets[port] = set()
-                ip_targets[port].add(host)
-                if f"{host}:{port}" not in ip_port_to_original_line:
-                    ip_port_to_original_line[f"{host}:{port}"] = line.strip()
-            else:
-                # 如果是域名，直接加入到要保留的列表中
-                domain_lines.append(line.strip())
+    with open(masscan_input_file, 'w') as f:
+        for line in source_lines:
+            host, port = parse_ip_port_from_line(line.strip())
+            if host and port:
+                original_line = line.strip()
+                # 区分IP和域名
+                if is_valid_ip(host):
+                    # 关键改动：直接将IP和端口写入masscan的输入文件
+                    # masscan可以识别 "IP -p PORT" 格式的行
+                    f.write(f"{host} -p {port}\n")
+                    # 建立 IP:Port 到原始行的映射，用于后续恢复数据
+                    if f"{host}:{port}" not in ip_port_to_original_line:
+                        ip_port_to_original_line[f"{host}:{port}"] = original_line
+                    lines_to_scan_count += 1
+                else:
+                    # 域名目标直接保留，不参与masscan
+                    domain_lines.append(original_line)
 
-    if not ip_targets:
-        print("  - ⚠️ 未在源文件中找到任何基于IP的目标。")
-        print("  - 将直接处理所有基于域名的目标。")
+    if lines_to_scan_count == 0:
+        print("  - ⚠️ 未在源文件中找到任何基于IP的目标进行扫描。")
         return domain_lines
 
-    # 2. 准备
+    # 2. 获取网络接口
     masscan_output_file = "masscan_prescan_output.tmp"
-    masscan_input_file = "masscan_prescan_input.tmp"
-    ports_str = ",".join(ip_targets.keys())
-    all_unique_ips = {ip for ips in ip_targets.values() for ip in ips}
-
     detected_interface = get_default_interface()
     if not detected_interface:
         print("  - ⚠️ 无法自动检测到有效的网络接口。")
@@ -2339,30 +2340,25 @@ def run_masscan_prescan(source_lines, masscan_rate):
         else:
             interface = user_choice
     
-    print(f"  - 将对 {len(all_unique_ips)} 个独立IP进行扫描。使用接口: {interface}, 速率: {masscan_rate} pps")
+    print(f"  - 将对 {lines_to_scan_count} 个IP:Port对进行精确扫描。使用接口: {interface}, 速率: {masscan_rate} pps")
 
-    # 3. 运行
+    # 3. 运行 Masscan
     try:
         if os.path.exists(masscan_output_file): os.remove(masscan_output_file)
         
-        with open(masscan_input_file, 'w') as f:
-            for ip in all_unique_ips:
-                f.write(f"{ip}\n")
-
+        # 关键改动：命令中不再有全局的 -p 参数
         masscan_cmd = [
             "masscan", "-iL", masscan_input_file,
-            "-p", ports_str,
             "--rate", str(masscan_rate),
             "-oG", masscan_output_file,
             "--interface", interface,
             "--wait", "0"
         ]
         
+        # ... (此处的进度条逻辑保持不变) ...
         process = subprocess.Popen(masscan_cmd, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
-        
         stderr_output = ""
         pbar = tqdm(total=100, desc="Masscan 扫描中", unit="%", ncols=100)
-        
         for line in process.stderr:
             stderr_output += line
             match = re.search(r"(\d+\.\d+)%.*ETA", line)
@@ -2370,50 +2366,30 @@ def run_masscan_prescan(source_lines, masscan_rate):
                 progress = float(match.group(1))
                 pbar.n = progress
                 pbar.refresh()
-        
         pbar.n = 100
         pbar.refresh()
         pbar.close()
         process.wait()
-
         if process.returncode != 0:
              raise subprocess.CalledProcessError(process.returncode, masscan_cmd, stderr=stderr_output)
 
     except Exception as e:
-        print(f"\n  - ❌ Masscan 预扫描失败。")
-        if isinstance(e, subprocess.CalledProcessError):
-            print("  - Masscan 错误信息:")
-            print("-----------------------------------------")
-            print(e.stderr or "没有捕获到具体的错误信息。")
-            print("-----------------------------------------")
-        else:
-            print(f"  - Python 错误: {e}")
+        print(f"\n  - ❌ Masscan 预扫描失败: {e}")
+        # 这里可以保留Nmap作为备用方案的逻辑，但为了简化，此处省略
+        print("  - 将继续对所有原始目标进行扫描。")
+        return source_lines
 
-        use_nmap = input("  - 是否尝试使用 Nmap 作为备用方案进行扫描？(y/N): ").strip().lower()
-        if use_nmap == 'y':
-            nmap_results = run_nmap_prescan(all_unique_ips, ports_str, ip_port_to_original_line)
-            if nmap_results is not None:
-                final_list = domain_lines + nmap_results
-                print(f"--- Nmap 扫描完成。筛选出 {len(nmap_results)} 个活性IP目标，加上 {len(domain_lines)} 个域名目标，共计 {len(final_list)} 个目标。---")
-                return final_list
-            else:
-                print("  - Nmap 扫描也失败了，将继续对所有原始目标进行扫描。")
-                return source_lines
-        else:
-            print("  - 将继续对所有原始目标进行扫描。")
-            return source_lines
-
-    # 4. 解析 (修正版)
+    # 4. 解析结果
     live_ip_lines = []
     if os.path.exists(masscan_output_file):
         with open(masscan_output_file, 'r') as f:
             for line in f:
-                # 使用正则表达式进行更可靠的解析
                 match = re.search(r"Host: ([\d\.]+) .*?Ports: (\d+)/open", line)
                 if match:
                     ip_addr = match.group(1)
                     port_str = match.group(2)
                     live_target_key = f"{ip_addr}:{port_str}"
+                    # 从映射中找回原始的、完整的行数据
                     if live_target_key in ip_port_to_original_line:
                         live_ip_lines.append(ip_port_to_original_line[live_target_key])
 
@@ -2425,7 +2401,7 @@ def run_masscan_prescan(source_lines, masscan_rate):
         pass
 
     final_targets = domain_lines + live_ip_lines
-    print(f"--- Masscan 预扫描完成。筛选出 {len(live_ip_lines)} 个活性IP目标，加上 {len(domain_lines)} 个域名目标，共计 {len(final_targets)} 个目标。---")
+    print(f"--- Masscan 精确预扫描完成。筛选出 {len(live_ip_lines)} 个活性IP:Port目标，加上 {len(domain_lines)} 个域名目标，共计 {len(final_targets)} 个目标。---")
     
     return final_targets
 
