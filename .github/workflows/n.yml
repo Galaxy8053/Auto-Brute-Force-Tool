@@ -1,0 +1,37 @@
+name: Release All Individual Files
+
+on:
+  push:
+    branches:
+      - main # 当 main 分支有任何推送时都触发
+
+jobs:
+  release:
+    name: Create Latest Release with All Files
+    runs-on: ubuntu-latest
+
+    steps:
+      # 第一步：检出代码
+      # 这会把仓库的所有文件都下载到工作流的虚拟机中
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 第二步：创建或更新 Release，并上传所有文件
+      # 使用一个非常流行的、专门用于发布 Release 的 Action
+      - name: Create or Update Release with All Files
+        uses: softprops/action-gh-release@v2
+        with:
+          # 使用一个固定的标签名，这样每次都会覆盖这个“最新”版本
+          tag_name: latest-files
+          name: "Latest Individual Files"
+          body: "This release contains all individual files from the repository, updated automatically."
+          # 关键改动在这里：使用通配符 *.* 来匹配所有文件
+          # 如果你想包含所有类型的文件（即使没有扩展名），可以直接用 *
+          # 如果你想排除子目录，这个方法需要进一步调整
+          files: |
+            *.*
+          # 这个选项会让这个 Release 标记为 "latest"
+          make_latest: true
+        env:
+          # GITHUB_TOKEN 是由 GitHub 自动提供的，用于授权 Action 代表你操作仓库
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
