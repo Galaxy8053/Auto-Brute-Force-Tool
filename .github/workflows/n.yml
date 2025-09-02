@@ -1,36 +1,33 @@
-name: Release All Individual Files
+name: Release Installer Script
 
 on:
   push:
     branches:
       - main
+    # 关键：只有当 install_tools.sh 本身被修改时，才触发这个工作流
+    paths:
+      - 'install_tools.sh'
 
 jobs:
   release:
-    name: Create Latest Release with All Files
-    
-    # ========================================================
-    #  关键改动：在这里为整个 job 授予写入内容的权限
-    # ========================================================
+    name: Create Latest Installer Release
     permissions:
       contents: write
-
     runs-on: ubuntu-latest
 
     steps:
-      # 第一步：检出代码
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 第二步：创建或更新 Release，并上传所有文件
-      - name: Create or Update Release with All Files
+      - name: Create or Update Release with Installer
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest-files
-          name: "Latest Individual Files"
-          body: "This release contains all individual files from the repository, updated automatically."
-          文件: |
-            *.*
+          # 使用一个专门的、固定的标签名
+          tag_name: latest-installer
+          name: "Latest Installer Script"
+          body: "This is the public entry point script. Updated automatically."
+          # 关键：这里只上传 install_tools.sh 这一个文件
+          文件: install_tools.sh
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
