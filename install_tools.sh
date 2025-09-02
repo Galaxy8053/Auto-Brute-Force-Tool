@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-#  一键安装最新版 Python, Go, screen, masscan 并下载文件脚本 (v4)
+#  一键安装最新版 Python, Go, screen, masscan 并下载文件脚本 (v5 - 已支持 AlmaLinux)
 #
 #  功能:
-#  1. 自动检测并适配 Debian/Ubuntu/CentOS 等主流 Linux 发行版。
+#  1. 自动检测并适配 Debian/Ubuntu/CentOS/AlmaLinux 等主流 Linux 发行版。
 #  2. 安装系统默认的稳定版 Python 3。
 #  3. **安装 screen 和 masscan。**
 #  4. 从官网下载并安装最新版本的 Go 语言环境。
@@ -60,7 +60,7 @@ if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
     log_info "正在安装 Python 3, screen, masscan 及基础工具..."
     apt-get install -y python3 curl wget git tar screen masscan || log_error "通过 apt 安装依赖失败。"
 
-elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" || "$OS" == "almalinux" ]]; then # <--- 修改点：在此处添加了 almalinux
     log_info "正在更新 yum/dnf 包管理器..."
     if command -v dnf &> /dev/null; then
         log_info "正在安装 Python 3, screen, masscan 及基础工具..."
@@ -157,4 +157,3 @@ echo -e "${GREEN}===============================================================
 echo -e "${GREEN} 环境已准备就绪，所有文件已下载到当前目录中。${NC}"
 echo -e "${GREEN} 请重新登录或执行 'source /etc/profile' 以使 Go 环境变量永久生效。${NC}"
 echo -e "${GREEN}===================================================================${NC}"
-
