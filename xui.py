@@ -998,8 +998,8 @@ ALIST_GO_TEMPLATE_LINES = [
     "}",
 ]
 
-# TCP 端口活性测试模板
-TCP_TEST_GO_TEMPLATE_LINES = [
+# TCP 端口活性测试模板 (主模式，写文件)
+TCP_ACTIVE_GO_TEMPLATE_LINES = [
     "package main",
     "import (",
     "	\"bufio\"",
@@ -1010,63 +1010,91 @@ TCP_TEST_GO_TEMPLATE_LINES = [
     "	\"sync\"",
     "	\"time\"",
     ")",
-    "// worker 函数从任务通道读取 'IP:port' 字符串并传递给 processIP",
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup) {",
     "	defer wg.Done()",
     "	for line := range tasks {",
-    "		processIP(line, file)",
+    "		ipPort := strings.TrimSpace(line)",
+    "		if _, _, err := net.SplitHostPort(ipPort); err != nil { continue }",
+    "		conn, err := net.DialTimeout(\"tcp\", ipPort, {timeout}*time.Second)",
+    "		if err == nil {",
+    "			conn.Close()",
+    "			file.WriteString(ipPort + \"\\n\")",
+    "		}",
     "	}",
     "}",
-    "// processIP 对给定的 'IP:port' 执行1次TCP连接测试",
-    "func processIP(line string, file *os.File) {",
-    "	ipPort := strings.TrimSpace(line)",
-    "	// 简单验证输入格式，必须是 'host:port'",
-    "	if _, _, err := net.SplitHostPort(ipPort); err != nil {",
-    "		return // 格式错误，直接丢弃",
-    "	}",
-	"	// 使用 net.DialTimeout 进行TCP连接尝试，带有超时",
-    "	conn, err := net.DialTimeout(\"tcp\", ipPort, {timeout}*time.Second)",
-	"	if err == nil {",
-	"		conn.Close() // 成功后立即关闭连接",
-	"		file.WriteString(ipPort + \"\\n\")",
-	"	}",
-    "}",
-    "// main 函数设置并发 worker 并处理文件 I/O",
     "func main() {",
-    "	if len(os.Args) < 3 {",
-    "		fmt.Println(\"Usage: ./program <inputFile> <outputFile>\")",
-    "		os.Exit(1)",
-    "	}",
+    "	if len(os.Args) < 3 { os.Exit(1) }",
     "	inputFile, outputFile := os.Args[1], os.Args[2]",
     "	batch, err := os.Open(inputFile)",
-    "	if err != nil {",
-    "		fmt.Printf(\"无法读取输入文件: %v\\n\", err)",
-    "		return",
-    "	}",
+    "	if err != nil { return }",
     "	defer batch.Close()",
     "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)",
-    "	if err != nil {",
-    "		fmt.Println(\"无法打开输出文件:\", err)",
-    "		return",
-    "	}",
+    "	if err != nil { return }",
     "	defer outFile.Close()",
     "	tasks := make(chan string, {semaphore_size})",
     "	var wg sync.WaitGroup",
-    "	// 启动 goroutine 池",
     "	for i := 0; i < {semaphore_size}; i++ {",
     "		wg.Add(1)",
     "		go worker(tasks, outFile, &wg)",
     "	}",
-    "	// 读取输入文件并将每行作为一个任务发送",
     "	scanner := bufio.NewScanner(batch)",
     "	for scanner.Scan() {",
     "		line := strings.TrimSpace(scanner.Text())",
     "		if line != \"\" { tasks <- line }",
     "	}",
-    "	close(tasks) // 所有行都已发送，关闭通道",
-    "	wg.Wait() // 等待所有 worker 执行完毕",
+    "	close(tasks)",
+    "	wg.Wait()",
     "}",
 ]
+
+# TCP 端口活性测试模板 (预扫描模式，带进度反馈)
+TCP_PRESCAN_GO_TEMPLATE_LINES = [
+    "package main",
+    "import (",
+    "	\"bufio\"",
+    "	\"fmt\"",
+    "	\"net\"",
+    "	\"os\"",
+    "	\"strings\"",
+    "	\"sync\"",
+    "	\"time\"",
+    ")",
+    "func worker(tasks <-chan string, wg *sync.WaitGroup) {",
+    "	defer wg.Done()",
+    "	for line := range tasks {",
+    "		ipPort := strings.TrimSpace(line)",
+    "		if _, _, err := net.SplitHostPort(ipPort); err != nil {",
+    "			fmt.Println(\"FAIL:\" + ipPort)",
+    "			continue",
+    "		}",
+    "		conn, err := net.DialTimeout(\"tcp\", ipPort, {timeout}*time.Second)",
+    "		if err == nil {",
+    "			conn.Close()",
+    "			fmt.Println(\"SUCCESS:\" + ipPort)",
+    "		} else {",
+    "			fmt.Println(\"FAIL:\" + ipPort)",
+    "		}",
+    "	}",
+    "}",
+    "func main() {",
+    "	if len(os.Args) < 2 { os.Exit(1) }",
+    "	inputFile := os.Args[1]",
+    "	batch, err := os.Open(inputFile)",
+    "	if err != nil { return }",
+    "	defer batch.Close()",
+    "	tasks := make(chan string, {semaphore_size})",
+    "	var wg sync.WaitGroup",
+    "	for i := 0; i < {semaphore_size}; i++ {",
+    "		wg.Add(1)",
+    "		go worker(tasks, &wg)",
+    "	}",
+    "	scanner := bufio.NewScanner(batch)",
+    "	for scanner.Scan() { tasks <- strings.TrimSpace(scanner.Text()) }",
+    "	close(tasks)",
+    "	wg.Wait()",
+    "}",
+]
+
 
 # =========================== 新增: 子网TCP扫描模板 ===========================
 SUBNET_TCP_SCANNER_GO_TEMPLATE_LINES = [
@@ -1554,25 +1582,26 @@ def generate_go_code(go_file_name, template_lines, **kwargs):
     if '{semaphore_size}' in code:
         code = code.replace("{semaphore_size}", str(kwargs.get('semaphore_size', 100)))
 
-    # 替换特定模板的占位符
-    if "user_list" in kwargs and '{user_list}' in code:
-        user_list = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(u)) for u in kwargs.get('usernames', [])]) + "}"
-        code = code.replace("{user_list}", user_list)
-    if "pass_list" in kwargs and '{pass_list}' in code:
-        pass_list = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(p)) for p in kwargs.get('passwords', [])]) + "}"
-        code = code.replace("{pass_list}", pass_list)
+    # 替换特定模板的占位符 (BUG修复)
+    if 'usernames' in kwargs and '{user_list}' in code:
+        user_list_str = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(u)) for u in kwargs['usernames']]) + "}"
+        code = code.replace("{user_list}", user_list_str)
+    if 'passwords' in kwargs and '{pass_list}' in code:
+        pass_list_str = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(p)) for p in kwargs['passwords']]) + "}"
+        code = code.replace("{pass_list}", pass_list_str)
 
     if 'proxy_type' in kwargs and '{proxy_type}' in code:
-        creds_list = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(line)) for line in kwargs.get('credentials', [])]) + "}"
+        creds_list_str = "[]string{" + ", ".join(['"{}"'.format(escape_go_string(line)) for line in kwargs.get('credentials', [])]) + "}"
         code = code.replace("{proxy_type}", kwargs['proxy_type']) \
                    .replace("{auth_mode}", str(kwargs.get('auth_mode', 0))) \
-                   .replace("{creds_list}", creds_list)
+                   .replace("{creds_list}", creds_list_str)
         if 'test_url' in kwargs:
             escaped_url = escape_go_string(kwargs['test_url'])
-            code = code.replace("testURL      = \"http://myip.ipip.net\"", "testURL      = \"{}\"".format(escaped_url))
+            code = code.replace("testURL      = \"http://myip.ipip.net\"", f'testURL      = "{escaped_url}"')
 
     with open(go_file_name, 'w', encoding='utf-8', errors='ignore') as f:
         f.write(code)
+
 
 def compile_go_program(go_file, executable_name):
     if sys.platform == "win32":
@@ -1627,33 +1656,48 @@ def check_and_manage_swap():
     try:
         swap_info = psutil.swap_memory()
         if swap_info.total > 0:
-            print("✅ [系统] 检测到已存在的Swap空间，大小: {:.2f} MiB。".format(swap_info.total / 1024 / 1024))
+            print(f"✅ [系统] 检测到已存在的Swap空间，大小: {swap_info.total / 1024 / 1024:.2f} MiB。")
             return
 
-        print("⚠️  [系统] 警告：未检测到活动的Swap交换空间。在高负载下，这会极大地增加进程被系统杀死的风险。")
-        choice = input("❓ 是否要创建一个2GB的临时Swap文件来提高稳定性？(y/N): ").strip().lower()
+        total_mem_gb = psutil.virtual_memory().total / (1024**3)
+        recommended_swap_gb = 0
+        if total_mem_gb < 2:
+            recommended_swap_gb = 2
+        elif 2 <= total_mem_gb <= 8:
+            recommended_swap_gb = int(total_mem_gb / 2) if int(total_mem_gb / 2) > 1 else 2
+        elif 8 < total_mem_gb <= 32:
+            recommended_swap_gb = 4
+        else: # > 32GB
+            recommended_swap_gb = 8
+
+        print(f"⚠️  [系统] 警告：未检测到活动的Swap交换空间。您的内存为 {total_mem_gb:.2f} GB。")
+        choice = input(f"❓ 是否要创建一个 {recommended_swap_gb}GB 的临时Swap文件来提高稳定性？(y/N): ").strip().lower()
         
         if choice == 'y':
             swap_file = "/tmp/autoswap.img"
-            print("   - 正在创建2GB Swap文件: {} (可能需要一些时间)...".format(swap_file))
+            print(f"   - 正在创建 {recommended_swap_gb}GB Swap文件: {swap_file} (可能需要一些时间)...")
             
-            if shutil.which("fallocate"):
-                subprocess.run(["fallocate", "-l", "2G", swap_file], check=True)
-            else:
-                subprocess.run(["dd", "if=/dev/zero", "of={}".format(swap_file), "bs=1M", "count=2048"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            subprocess.run(["chmod", "600", swap_file], check=True)
-            subprocess.run(["mkswap", swap_file], check=True)
-            subprocess.run(["swapon", swap_file], check=True)
-            
-            atexit.register(cleanup_swap, swap_file)
-            
-            print("✅ [系统] 成功创建并启用了2GB Swap文件: {}".format(swap_file))
-            print("   - 该文件将在脚本退出时自动被禁用和删除。")
+            try:
+                if shutil.which("fallocate"):
+                    subprocess.run(["fallocate", "-l", f"{recommended_swap_gb}G", swap_file], check=True)
+                else:
+                    count = recommended_swap_gb * 1024
+                    subprocess.run(["dd", "if=/dev/zero", f"of={swap_file}", "bs=1M", f"count={count}"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                subprocess.run(["chmod", "600", swap_file], check=True)
+                subprocess.run(["mkswap", swap_file], check=True)
+                subprocess.run(["swapon", swap_file], check=True)
+                
+                atexit.register(cleanup_swap, swap_file)
+                
+                print(f"✅ [系统] 成功创建并启用了 {recommended_swap_gb}GB Swap文件: {swap_file}")
+                print("   - 该文件将在脚本退出时自动被禁用和删除。")
+            except Exception as e:
+                print(f"❌ [系统] Swap文件创建失败: {e}")
+                print("   - 请检查权限和磁盘空间。脚本将继续运行，但稳定性可能受影响。")
 
     except Exception as e:
-        print("❌ [系统] Swap文件管理失败: {}".format(e))
-        print("   - 请检查权限或手动创建Swap。脚本将继续运行，但稳定性可能受影响。")
+        print(f"❌ [系统] Swap检查失败: {e}")
 
 def cleanup_swap(swap_file):
     print("\n   - 正在禁用和清理临时Swap文件: {} ...".format(swap_file))
@@ -2248,7 +2292,7 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
             ips_to_verify = {f"{ip}:{port}" for ip in all_live_ips_str} - {f"{l.split()[0]}" for l in master_results}
 
             if not ips_to_verify:
-                print("    - TCP扫描发现 {len(all_live_ips_str)} 个活性主机，但均为已知结果。")
+                print(f"    - TCP扫描发现 {len(all_live_ips_str)} 个活性主机，但均为已知结果。")
                 continue
 
             print(f"    - TCP扫描发现 {len(ips_to_verify)} 个新的活性目标，正在进行二次验证...")
@@ -2297,7 +2341,7 @@ def run_go_tcp_prescan(source_lines, go_concurrency, timeout):
     print("\n--- 正在执行 Go TCP 预扫描以筛选活性IP... ---")
 
     # 1. 编译专用的TCP测试程序
-    generate_go_code("tcp_prescan.go", TCP_TEST_GO_TEMPLATE_LINES, semaphore_size=go_concurrency, timeout=timeout)
+    generate_go_code("tcp_prescan.go", TCP_PRESCAN_GO_TEMPLATE_LINES, semaphore_size=go_concurrency, timeout=timeout)
     executable = compile_go_program("tcp_prescan.go", "tcp_prescan_executable")
     if not executable:
         print("  - ❌ TCP预扫描程序编译失败，跳过预扫描。")
@@ -2311,29 +2355,34 @@ def run_go_tcp_prescan(source_lines, go_concurrency, timeout):
     with open(input_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(source_lines))
     
-    print(f"  - 正在对 {len(source_lines)} 个目标进行TCP活性检测...")
+    live_targets = []
     try:
-        cmd = ['./' + executable, input_file, output_file]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        cmd = ['./' + executable, input_file]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
+        
+        with tqdm(total=len(source_lines), desc="[⚡] TCP活性检测", ncols=100) as pbar:
+            for line in process.stdout:
+                pbar.update(1)
+                if line.startswith("SUCCESS:"):
+                    target = line.strip().split(':', 1)[1]
+                    live_targets.append(target)
+        
+        stderr_output = process.communicate()[1]
+        if process.returncode != 0:
+            print(f"\n  - ⚠️  Go TCP扫描进程返回非零代码: {process.returncode}")
+            if stderr_output:
+                print(f"  - 错误信息: {stderr_output}")
+
     except Exception as e:
         print(f"  - ❌ Go TCP预扫描执行失败: {e}，跳过预扫描。")
+        return source_lines
+    finally:
+        # 3. 清理
         if os.path.exists(input_file): os.remove(input_file)
+        if os.path.exists(output_file): os.remove(output_file)
         if os.path.exists("tcp_prescan.go"): os.remove("tcp_prescan.go")
         if os.path.exists(executable): os.remove(executable)
-        return source_lines
-
-    # 3. 读取结果并返回
-    live_targets = []
-    if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-        with open(output_file, 'r', encoding='utf-8') as f:
-            live_targets = [line.strip() for line in f if line.strip()]
     
-    # 4. 清理
-    if os.path.exists(input_file): os.remove(input_file)
-    if os.path.exists(output_file): os.remove(output_file)
-    if os.path.exists("tcp_prescan.go"): os.remove("tcp_prescan.go")
-    if os.path.exists(executable): os.remove(executable)
-
     print(f"--- ✅ Go TCP 预扫描完成。筛选出 {len(live_targets)} 个活性目标。---")
     return live_targets
 
@@ -2472,7 +2521,7 @@ if __name__ == "__main__":
             6: XUI_GO_TEMPLATE_6_LINES, 7: XUI_GO_TEMPLATE_7_LINES,
             8: XUI_GO_TEMPLATE_8_LINES, 9: PROXY_GO_TEMPLATE_LINES,
             10: PROXY_GO_TEMPLATE_LINES, 11: PROXY_GO_TEMPLATE_LINES,
-            12: ALIST_GO_TEMPLATE_LINES, 13: TCP_TEST_GO_TEMPLATE_LINES,
+            12: ALIST_GO_TEMPLATE_LINES, 13: TCP_ACTIVE_GO_TEMPLATE_LINES,
         }
 
         template_lines = template_map[TEMPLATE_MODE]
