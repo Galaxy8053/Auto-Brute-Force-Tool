@@ -477,15 +477,8 @@ def main() -> None:
     encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     
-    # -- 终极修正：明确启用任务队列 --
-    application_builder = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init)
-    # 检查是否有任务队列相关的处理函数，如果有，则构建时启用
-    if any(isinstance(handler, CommandHandler) and handler.callback in [kkfofa_command] for handler_group in application_builder.handlers.values() for handler in handler_group) \
-        or any(isinstance(handler, ConversationHandler) and any(isinstance(entry, CommandHandler) and entry.callback in [kkfofa_command] for entry in handler.entry_points) for handler_group in application_builder.handlers.values() for handler in handler_group):
-          pass # Job queue is implicitly needed by run_once
-
-    application = application_builder.build()
-
+    # 终极修正：直接构建Application，不再需要复杂的检查
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     add_api_conv = ConversationHandler(
         entry_points=[CommandHandler('addapi', add_api_start)],
@@ -524,3 +517,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
