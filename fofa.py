@@ -357,7 +357,12 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             return ConversationHandler.END
         results = data.get('results', [])
         message = f"*查询语句*: `{base_query}`\n*总数*: `{total_size}`\n\n*前20条预览结果*:\n"
-        message += "\n".join([f"`{res[0]}`" for res in results])
+        if results:
+             # -- 终极修正：直接迭代字符串列表 --
+             message += "\n".join([f"`{res}`" for res in results])
+        else:
+            message += "没有预览结果。"
+        # -- 修正结束 --
         await query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
         return ConversationHandler.END
     elif mode == 'mode_cancel':
@@ -404,7 +409,8 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
                 continue
             results = data.get('results', [])
             for res in results:
-                f.write(f"{res[0]}\n")
+                # -- 终极修正：直接写入字符串 --
+                f.write(f"{res}\n")
     await context.bot.send_message(chat_id, "全量数据下载完成，正在发送文件...")
     try:
         with open(output_filename, 'rb') as f:
@@ -439,7 +445,8 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
                 results = data.get('results', [])
                 if not results: break
                 for res in results:
-                    f.write(f"{res[0]}\n")
+                    # -- 终极修正：直接写入字符串 --
+                    f.write(f"{res}\n")
                 daily_count += len(results)
                 if len(results) < 10000: break 
                 page += 1
@@ -477,7 +484,6 @@ def main() -> None:
     encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     
-    # 终极修正：直接构建Application，不再需要复杂的检查
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     add_api_conv = ConversationHandler(
