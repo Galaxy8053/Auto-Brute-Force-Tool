@@ -41,6 +41,7 @@ GET_KEY = range(1)
 ASK_DATE_RANGE = range(1, 2)
 GET_PROXY = range(2,3)
 REMOVE_API_PROMPT = range(3,4)
+MANAGE_VIP_PROMPT = range(4,5)
 
 # --- 权限与配置管理 ---
 def load_config():
@@ -89,7 +90,8 @@ def restricted(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id not in CONFIG.get('admins', []):
-            await update.message.reply_text("⛔️ 抱歉，您没有权限执行此命令。")
+            if update.callback_query: await update.callback_query.answer("⛔️ 抱歉，您没有权限。", show_alert=True)
+            else: await update.message.reply_text("⛔️ 抱歉，您没有权限执行此命令。")
             return
         return await func(update, context, *args, **kwargs)
     return wrapped
@@ -100,7 +102,8 @@ def super_admin_restricted(func):
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id != CONFIG.get('super_admin'):
-            await update.message.reply_text("⛔️ 抱歉，只有超级管理员才能执行此命令。")
+            if update.callback_query: await update.callback_query.answer("⛔️ 抱歉，只有超级管理员才能操作。", show_alert=True)
+            else: await update.message.reply_text("⛔️ 抱歉，只有超级管理员才能执行此命令。")
             return
         return await func(update, context, *args, **kwargs)
     return wrapped
@@ -189,7 +192,10 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if is_super:
         keyboard.append([InlineKeyboardButton("🛡️ 权限管理", callback_data='settings_vip')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⚙️ *设置菜单*\n\n请选择您要管理的项目:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    # 修正：确保无论是命令还是回调都能正确响应
+    target_message = update.effective_message
+    await target_message.reply_text("⚙️ *设置菜单*\n\n请选择您要管理的项目:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
 
 @restricted
 async def add_api_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -212,7 +218,11 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text('操作已取消。')
+    # 修正：处理回调查询和消息两种情况
+    if update.callback_query:
+        await update.callback_query.edit_message_text('操作已取消。')
+    else:
+        await update.message.reply_text('操作已取消。')
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -392,10 +402,11 @@ async def settings_callback_query(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     parts = query.data.split('_')
     menu = parts[1]
-
+    
     if menu == 'main':
         await query.message.delete()
-        await settings_command(update, context)
+        # 修正：确保从 update 对象中获取消息来进行回复
+        await settings_command(update.callback_query, context)
         return
 
     if menu == 'api':
@@ -424,7 +435,7 @@ async def settings_callback_query(update: Update, context: ContextTypes.DEFAULT_
     
     elif menu == 'vip':
         admin_list = "\n".join([f"- `{admin_id}`" for admin_id in CONFIG['admins']])
-        message = f"🛡️ *权限管理*\n\n当前管理员列表:\n{admin_list}\n\n请直接使用命令 `/vip <add/remove> <用户ID>` 进行操作。"
+        message = f"🛡️ *权限管理*\n\n当前管理员列表:\n{admin_list}\n\n请在下方直接输入命令进行操作:\n`/vip add <用户ID>`\n`/vip remove <用户ID>`"
         keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -437,16 +448,16 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
     action = query.data.replace('action_', '')
 
     if action == 'api_add':
-        await query.message.reply_text("请使用 `/addapi` 命令开始添加流程。")
-        await query.message.delete()
+        await query.edit_message_text("请直接发送您的 Fofa API Key。")
+        return GET_KEY
     
     elif action == 'api_remove_prompt':
-        await query.message.reply_text("请使用 `/settings remove <编号>`。")
-        await query.message.delete()
+        await query.edit_message_text("请输入您要删除的API Key的编号。")
+        return REMOVE_API_PROMPT
 
     elif action == 'proxy_set':
-        await query.message.reply_text("请使用 `/setproxy` 命令开始设置流程。")
-        await query.message.delete()
+        await query.edit_message_text("请输入您的代理地址, 例如 `http://127.0.0.1:7890`。")
+        return GET_PROXY
 
     elif action == 'proxy_delete':
         CONFIG['proxy'] = ""
@@ -457,8 +468,11 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         new_mode = action.split('_')[-1]
         CONFIG['dedup_mode'] = new_mode
         save_config(CONFIG)
-        mode_text = "智能去重 (忽略协议头)" if new_mode == 'smart' else "精确去重 (完整匹配)"
+        mode_text = "智能去重" if new_mode == 'smart' else "精确去重"
         await query.edit_message_text(f"✅ 去重模式已更新为: *{mode_text}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]), parse_mode=ParseMode.MARKDOWN)
+    
+    # 修正：当不是进入新会话状态时，返回 END
+    return ConversationHandler.END
 
 # --- 终极修正：恢复被错误删除的 manage_vip 函数 ---
 @super_admin_restricted
@@ -601,16 +615,21 @@ def main() -> None:
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    add_api_conv = ConversationHandler(
-        entry_points=[CommandHandler('addapi', add_api_start), CallbackQueryHandler(add_api_start, pattern='^action_api_add$')],
-        states={ GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)] },
-        fallbacks=[CommandHandler('cancel', cancel)],
+    # 将所有交互都整合到settings的会话中
+    settings_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler('settings', settings_command),
+            CommandHandler('root', settings_command), # root作为别名
+        ],
+        states={
+            1: [CallbackQueryHandler(settings_action_callback_query, pattern='^action_')],
+            GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
+            GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(settings_callback_query, pattern='^settings_')],
+        allow_reentry=True
     )
-    set_proxy_conv = ConversationHandler(
-        entry_points=[CommandHandler('setproxy', set_proxy_start), CallbackQueryHandler(set_proxy_start, pattern='^action_proxy_set$')],
-        states={ GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)] },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
+    
     kkfofa_conv = ConversationHandler(
         entry_points=[CommandHandler('kkfofa', kkfofa_command)],
         states={
@@ -623,16 +642,15 @@ def main() -> None:
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(add_api_conv)
-    application.add_handler(set_proxy_conv)
     application.add_handler(CommandHandler("vip", manage_vip))
     application.add_handler(kkfofa_conv)
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CommandHandler("host", host_command))
-    application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("root", settings_command))
+    application.add_handler(settings_conv) # 用统一的settings会话
+    
+    # 修正：将顶层的回调处理器也加入，确保所有按钮都能响应
     application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
-    application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
+    application.add_handler(CallbackQueryHandler(query_mode_callback, pattern='^mode_'))
 
     logger.info("🚀 机器人已启动，开始轮询...")
     application.run_polling()
