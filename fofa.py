@@ -186,11 +186,9 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         else:
             await update.message.reply_text(f"提示：这个API Key已经存在。\n你好, {data.get('username', 'user')}!")
     else:
-        # 使用更详细的错误信息
         await update.message.reply_text(f"错误：API验证失败！原因: {data.get('errmsg', '未知错误')}")
     return ConversationHandler.END
 
-# ... (其他命令处理函数基本不变) ...
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('操作已取消。')
     context.user_data.clear()
@@ -283,8 +281,6 @@ async def manage_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except ValueError:
         await update.message.reply_text("错误: User ID必须是数字。")
 
-
-# --- 新增的调试命令 ---
 @restricted
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not CONFIG['apis']:
