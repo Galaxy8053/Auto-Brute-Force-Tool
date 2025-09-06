@@ -9,7 +9,6 @@ from functools import wraps
 # v20.x 版本的正确导入方式
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-# v20.x 版本的正确导入方式
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,7 +16,7 @@ from telegram.ext import (
     ConversationHandler,
     MessageHandler,
     CallbackQueryHandler,
-    filters  # 直接导入 filters 模块
+    filters
 )
 
 # --- 基础配置 ---
@@ -75,7 +74,6 @@ def super_admin_restricted(func):
     return wrapped
 
 # --- Fofa 核心逻辑 ---
-# ... (这部分函数与之前版本完全相同，为简洁省略) ...
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36"
 }
@@ -105,13 +103,12 @@ def fetch_fofa_data(email, key, query, page=1, page_size=10000, fields="host"):
         return None, str(e)
 
 
-# --- Bot 命令处理函数 (v20.x async/await 语法) ---
+# --- Bot 命令处理函数 ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('欢迎使用 Fofa 查询 Bot！\n使用 /help 查看所有可用命令。')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (帮助文本内容不变) ...
     help_text = """
     *Fofa查询机器人指令手册*
 
@@ -153,7 +150,6 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("正在验证API密钥，请稍候...")
     is_valid, data = verify_fofa_api(email, key)
     if is_valid:
-        # ... (逻辑不变) ...
         for api in CONFIG['apis']:
             if api['email'] == email:
                 api['key'] = key
@@ -172,7 +168,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
-# ... (其他命令函数也需要更新为 async def) ...
 @restricted
 async def manage_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
@@ -231,7 +226,6 @@ async def manage_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (逻辑不变, 只加上 async/await)
     if not CONFIG['apis']:
         await update.message.reply_text("错误：请先使用 `/addapi` 添加至少一个Fofa API。")
         return ConversationHandler.END
@@ -241,16 +235,19 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("请输入查询语句。\n用法: `/kkfofa <查询语句>`")
         return ConversationHandler.END
     
-    # ... (daterange 逻辑不变)
+    # 修正: 为后台任务准备数据
+    job_data = {'base_query': query_text, 'chat_id': update.effective_chat.id}
+
     if "daterange:" in query_text.lower():
         try:
             parts = query_text.lower().split("daterange:")
-            base_query = parts[0].strip()
+            job_data['base_query'] = parts[0].strip()
             date_parts = parts[1].strip().split("to")
-            start_date = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
-            end_date = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
-            context.job_queue.run_once(run_date_range_query, 0, context={'chat_id': update.effective_chat.id, 'base_query': base_query, 'start_date': start_date, 'end_date': end_date}, name=f"date_range_{update.effective_chat.id}")
-            await update.message.reply_text(f"已收到按天下载任务！\n*查询*: `{base_query}`\n*时间*: `{start_date.date()}` 到 `{end_date.date()}`\n任务已在后台开始。", parse_mode=ParseMode.MARKDOWN)
+            job_data['start_date'] = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
+            job_data['end_date'] = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
+            
+            context.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{job_data['chat_id']}")
+            await update.message.reply_text(f"已收到按天下载任务！\n*查询*: `{job_data['base_query']}`\n*时间*: `{job_data['start_date'].date()}` 到 `{job_data['end_date'].date()}`\n任务已在后台开始。", parse_mode=ParseMode.MARKDOWN)
         except (ValueError, IndexError):
             await update.message.reply_text("错误：日期范围格式不正确。\n请使用: `daterange:YYYY-MM-DD to YYYY-MM-DD`")
         return ConversationHandler.END
@@ -274,7 +271,8 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if total_size <= 10000:
         await msg.edit_text(f"查询到 {total_size} 条结果，符合免费额度，正在为您下载...")
-        context.job_queue.run_once(run_full_download_query, 0, context={'chat_id': update.effective_chat.id, 'query': query_text, 'total_size': total_size}, name=f"full_download_{update.effective_chat.id}")
+        job_data['total_size'] = total_size
+        context.job_queue.run_once(run_full_download_query, 0, data=job_data, name=f"full_download_{job_data['chat_id']}")
         return ConversationHandler.END
     else:
         keyboard = [
@@ -297,6 +295,7 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     mode = query.data
     base_query = context.user_data.get('query')
     total_size = context.user_data.get('total_size')
+    chat_id = query.message.chat_id
 
     if mode == 'mode_daily':
         await query.edit_message_text(text="您选择了按天下载模式。\n请输入起止日期 (格式: `YYYY-MM-DD to YYYY-MM-DD`)")
@@ -304,11 +303,11 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     elif mode == 'mode_full':
         await query.edit_message_text(text=f"已开始全量下载任务 ({total_size}条)，请注意这可能会消耗您的F点或会员权益。")
-        context.job_queue.run_once(run_full_download_query, 0, context={'chat_id': query.message.chat_id, 'query': base_query, 'total_size': total_size}, name=f"full_download_{query.message.chat_id}")
+        job_data = {'base_query': base_query, 'total_size': total_size, 'chat_id': chat_id}
+        context.job_queue.run_once(run_full_download_query, 0, data=job_data, name=f"full_download_{chat_id}")
         return ConversationHandler.END
 
     elif mode == 'mode_preview':
-        # ... (逻辑不变) ...
         api = CONFIG['apis'][0]
         data, error = fetch_fofa_data(api['email'], api['key'], base_query, page_size=20)
         if error:
@@ -328,9 +327,9 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def get_date_range_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (逻辑不变) ...
     date_range_str = update.message.text
     base_query = context.user_data.get('query')
+    chat_id = update.effective_chat.id
 
     try:
         date_parts = date_range_str.lower().split("to")
@@ -339,16 +338,13 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
 
         await update.message.reply_text(f"日期范围确认！任务已在后台开始。\n*查询*: `{base_query}`\n*时间*: `{start_date.date()}` 到 `{end_date.date()}`", parse_mode=ParseMode.MARKDOWN)
         
-        context.job_queue.run_once(
-            run_date_range_query, 0, 
-            context={
-                'chat_id': update.effective_chat.id, 
-                'base_query': base_query,
-                'start_date': start_date,
-                'end_date': end_date
-            },
-            name=f"date_range_{update.effective_chat.id}"
-        )
+        job_data = {
+            'chat_id': chat_id, 
+            'base_query': base_query,
+            'start_date': start_date,
+            'end_date': end_date
+        }
+        context.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{chat_id}")
         context.user_data.clear()
         return ConversationHandler.END
     except (ValueError, IndexError):
@@ -356,12 +352,11 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
         return ASK_DATE_RANGE
 
 
-# --- 后台任务函数 (v20.x async/await 语法) ---
+# --- 后台任务函数 ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    # ... (逻辑不变, 只加上 async/await)
-    chat_id = job.chat_id
-    query_text = job.data['query']
+    chat_id = job.data['chat_id']
+    query_text = job.data['base_query']
     total_size = job.data['total_size']
     api = CONFIG['apis'][0]
     
@@ -395,8 +390,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
 
 async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    # ... (逻辑不变, 只加上 async/await)
-    chat_id = job.chat_id
+    chat_id = job.data['chat_id']
     base_query = job.data['base_query']
     start_date = job.data['start_date']
     end_date = job.data['end_date']
@@ -476,13 +470,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-```
 
-### 请按以下步骤操作
-
-1.  **保存脚本**: 将上面的代码保存为 `fofa_bot_final_v20.7.py`。
-2.  **确保在虚拟环境中**: 确认您的命令行提示符前有 `(venv)`。
-3.  **运行**:
-    ```bash
-    python fofa_bot_final_v20.7.py
-    
