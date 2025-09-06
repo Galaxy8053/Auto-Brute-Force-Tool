@@ -300,26 +300,302 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     data, error, debug_info = _make_request(url)
 
-    # 格式化调试信息
-    debug_report = f"""
-*🕵️‍♂️ Fofa API 调试报告 🕵️‍♂️*
+    # -- 语法修正开始 --
+    # 将复杂的格式化操作移出f-string，确保语法简单
+    headers_str = json.dumps(debug_info.get("Response_Headers"), indent=2, ensure_ascii=False)
+    success_str = '✅ 是' if data else '❌ 否'
+    exception_str = debug_info.get("Exception") or '无'
+    body_str = str(debug_info.get("Response_Body"))[:1000]
 
-*--- 请求详情 ---*
-*URL*: `{debug_info["URL"]}`
-*代理*: `{debug_info["Proxies"] or '无'}`
+    debug_report = (
+        f"*🕵️‍♂️ Fofa API 调试报告 🕵️‍♂️*\n\n"
+        f"*--- 请求详情 ---*\n"
+        f"*URL*: `{debug_info['URL']}`\n"
+        f"*代理*: `{debug_info['Proxies'] or '无'}`\n\n"
+        f"*--- 响应详情 ---*\n"
+        f"*状态码*: `{debug_info['Response_Status']}`\n"
+        f"*响应头*:\n`{headers_str}`\n\n"
+        f"*--- 结果 ---*\n"
+        f"*请求是否成功?* {success_str}\n"
+        f"*错误信息*: `{error or '无'}`\n\n"
+        f"*--- 底层异常 (如有) ---*\n"
+        f"`{exception_str}`\n\n"
+        f"*--- 原始响应体 (预览) ---*\n"
+        f"```\n{body_str}\n```"
+    )
+    # -- 语法修正结束 --
+    
+    await update.message.reply_text(debug_report, parse_mode=ParseMode.MARKDOWN)
 
-*--- 响应详情 ---*
-*状态码*: `{debug_info["Response_Status"]}`
-*响应头*: 
-`{json.dumps(debug_info["Response_Headers"], indent=2)}`
 
-*--- 结果 ---*
-*请求是否成功?* {'✅ 是' if data else '❌ 否'}
-*错误信息*: `{error or '无'}`
+@restricted
+async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not CONFIG['apis']:
+        await update.message.reply_text("错误：请先使用 `/addapi` 添加至少一个Fofa API。")
+        return ConversationHandler.END
 
-*--- 底层异常 (如有) ---*
-`{debug_info["Exception"] or '无'}`
+    api_key = CONFIG['apis'][0] 
+    query_text = " ".join(context.args)
+    if not query_text:
+        await update.message.reply_text("请输入查询语句。\n用法: `/kkfofa <查询语句>`")
+        return ConversationHandler.END
+    
+    job_data = {'base_query': query_text, 'chat_id': update.effective_chat.id, 'api_key': api_key}
 
-*--- 原始响应体 (预览) ---*
-```
-{str(debug_info["Response_Body"])[:1000]}
+    if "daterange:" in query_text.lower():
+        try:
+            parts = query_text.lower().split("daterange:")
+            job_data['base_query'] = parts[0].strip()
+            date_parts = parts[1].strip().split("to")
+            job_data['start_date'] = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
+            job_data['end_date'] = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
+            
+            context.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{job_data['chat_id']}")
+            await update.message.reply_text(f"已收到按天下载任务！\n*查询*: `{job_data['base_query']}`\n*时间*: `{job_data['start_date'].date()}` 到 `{job_data['end_date'].date()}`\n任务已在后台开始。", parse_mode=ParseMode.MARKDOWN)
+        except (ValueError, IndexError):
+            await update.message.reply_text("错误：日期范围格式不正确。\n请使用: `daterange:YYYY-MM-DD to YYYY-MM-DD`")
+        return ConversationHandler.END
+
+
+    msg = await update.message.reply_text("正在查询数据总数，请稍候...")
+    
+    data, error, _ = fetch_fofa_data(api_key, query_text, page_size=1)
+    if error:
+        await msg.edit_text(f"查询出错: {error}")
+        return ConversationHandler.END
+
+    total_size = data.get('size', 0)
+    if total_size == 0:
+        await msg.edit_text("未找到相关结果。")
+        return ConversationHandler.END
+
+    context.user_data['query'] = query_text
+    context.user_data['total_size'] = total_size
+
+    if total_size <= 10000:
+        await msg.edit_text(f"查询到 {total_size} 条结果，符合免费额度，正在为您下载...")
+        job_data['total_size'] = total_size
+        context.job_queue.run_once(run_full_download_query, 0, data=job_data, name=f"full_download_{job_data['chat_id']}")
+        return ConversationHandler.END
+    else:
+        keyboard = [
+            [InlineKeyboardButton("按天下载 (穷人模式)", callback_data='mode_daily')],
+            [InlineKeyboardButton("全部下载 (消耗F点)", callback_data='mode_full')],
+            [InlineKeyboardButton("仅预览前20条", callback_data='mode_preview')],
+            [InlineKeyboardButton("取消", callback_data='mode_cancel')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await msg.edit_text(
+            f"查询到 {total_size} 条结果，已超出免费额度(10000条)。\n请选择下载模式:",
+            reply_markup=reply_markup
+        )
+        return 1
+
+async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    mode = query.data
+    base_query = context.user_data.get('query')
+    total_size = context.user_data.get('total_size')
+    chat_id = query.message.chat_id
+    api_key = CONFIG['apis'][0]
+
+    if mode == 'mode_daily':
+        await query.edit_message_text(text="您选择了按天下载模式。\n请输入起止日期 (格式: `YYYY-MM-DD to YYYY-MM-DD`)")
+        return ASK_DATE_RANGE
+    
+    elif mode == 'mode_full':
+        await query.edit_message_text(text=f"已开始全量下载任务 ({total_size}条)，请注意这可能会消耗您的F点或会员权益。")
+        job_data = {'base_query': base_query, 'total_size': total_size, 'chat_id': chat_id, 'api_key': api_key}
+        context.job_queue.run_once(run_full_download_query, 0, data=job_data, name=f"full_download_{chat_id}")
+        return ConversationHandler.END
+
+    elif mode == 'mode_preview':
+        data, error, _ = fetch_fofa_data(api_key, base_query, page_size=20)
+        if error:
+            await query.edit_message_text(f"预览失败: {error}")
+            return ConversationHandler.END
+        
+        results = data.get('results', [])
+        message = f"*查询语句*: `{base_query}`\n*总数*: `{total_size}`\n\n*前20条预览结果*:\n"
+        message += "\n".join([f"`{res[0]}`" for res in results])
+        await query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
+        return ConversationHandler.END
+        
+    elif mode == 'mode_cancel':
+        await query.edit_message_text(text="操作已取消。")
+        context.user_data.clear()
+        return ConversationHandler.END
+    return ConversationHandler.END
+
+async def get_date_range_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    date_range_str = update.message.text
+    base_query = context.user_data.get('query')
+    chat_id = update.effective_chat.id
+    api_key = CONFIG['apis'][0]
+
+    try:
+        date_parts = date_range_str.lower().split("to")
+        start_date = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
+        end_date = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
+
+        await update.message.reply_text(f"日期范围确认！任务已在后台开始。\n*查询*: `{base_query}`\n*时间*: `{start_date.date()}` 到 `{end_date.date()}`", parse_mode=ParseMode.MARKDOWN)
+        
+        job_data = {
+            'chat_id': chat_id, 
+            'base_query': base_query,
+            'start_date': start_date,
+            'end_date': end_date,
+            'api_key': api_key
+        }
+        context.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{chat_id}")
+        context.user_data.clear()
+        return ConversationHandler.END
+    except (ValueError, IndexError):
+        await update.message.reply_text("格式错误，请重新输入 (格式: `YYYY-MM-DD to YYYY-MM-DD`)\n或使用 /cancel 取消。")
+        return ASK_DATE_RANGE
+
+
+# --- 后台任务函数 ---
+async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    chat_id = job.data['chat_id']
+    query_text = job.data['base_query']
+    total_size = job.data['total_size']
+    api_key = job.data['api_key']
+    
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    output_filename = f"fofa_full_{timestamp}.txt"
+    
+    page_size = 10000 
+    pages_to_fetch = (total_size + page_size - 1) // page_size
+    
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        for page in range(1, pages_to_fetch + 1):
+            await context.bot.send_message(chat_id, f"正在下载第 {page}/{pages_to_fetch} 页...")
+            data, error, _ = fetch_fofa_data(api_key, query_text, page=page, page_size=page_size)
+            if error:
+                await context.bot.send_message(chat_id, f"下载第 {page} 页时出错: {error}")
+                continue
+            
+            results = data.get('results', [])
+            for res in results:
+                f.write(f"{res[0]}\n")
+    
+    await context.bot.send_message(chat_id, "全量数据下载完成，正在发送文件...")
+    try:
+        with open(output_filename, 'rb') as f:
+            await context.bot.send_document(chat_id, document=f)
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"发送文件失败: {e}")
+    finally:
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+
+async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    chat_id = job.data['chat_id']
+    base_query = job.data['base_query']
+    start_date = job.data['start_date']
+    end_date = job.data['end_date']
+    api_key = job.data['api_key']
+    total_found, current_date = 0, start_date
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    output_filename = f"fofa_daily_{timestamp}.txt"
+
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        while current_date <= end_date:
+            date_str = current_date.strftime("%Y-%m-%d")
+            daily_query = f'({base_query}) && after="{date_str}" && before="{date_str}"'
+            await context.bot.send_message(chat_id, f"正在下载 `{date_str}` 的数据...", parse_mode=ParseMode.MARKDOWN)
+            page, daily_count = 1, 0
+            while True:
+                data, error, _ = fetch_fofa_data(api_key, daily_query, page=page, page_size=10000)
+                if error:
+                    await context.bot.send_message(chat_id, f"下载 `{date_str}` 数据时出错: {error}", parse_mode=ParseMode.MARKDOWN)
+                    break 
+                results = data.get('results', [])
+                if not results: break
+                for res in results:
+                    f.write(f"{res[0]}\n")
+                daily_count += len(results)
+                if len(results) < 10000: break 
+                page += 1
+            await context.bot.send_message(chat_id, f"`{date_str}` 下载完成，共找到 {daily_count} 条数据。", parse_mode=ParseMode.MARKDOWN)
+            total_found += daily_count
+            current_date += timedelta(days=1)
+    
+    await context.bot.send_message(chat_id, f"所有日期下载完成！总共找到 {total_found} 条数据。\n正在发送结果文件...")
+    try:
+        with open(output_filename, 'rb') as f:
+            await context.bot.send_document(chat_id, document=f)
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"发送文件失败: {e}")
+    finally:
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+
+
+
+async def post_init(application: Application):
+    """在Bot启动后设置命令菜单"""
+    commands = [
+        BotCommand("kkfofa", "查询Fofa"),
+        BotCommand("debug", "调试查询 (仅管理员)"),
+        BotCommand("root", "查看/管理API和代理"),
+        BotCommand("addapi", "添加API Key"),
+        BotCommand("setproxy", "设置网络代理"),
+        BotCommand("delproxy", "删除网络代理"),
+        BotCommand("vip", "管理管理员 (仅超管)"),
+        BotCommand("help", "获取帮助"),
+        BotCommand("cancel", "取消当前操作"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("已成功设置命令菜单！")
+
+
+def main() -> None:
+    """启动Bot"""
+    encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
+    TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
+    
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+
+    add_api_conv = ConversationHandler(
+        entry_points=[CommandHandler('addapi', add_api_start)],
+        states={ GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)] },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    set_proxy_conv = ConversationHandler(
+        entry_points=[CommandHandler('setproxy', set_proxy_start)],
+        states={ GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)] },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    kkfofa_conv = ConversationHandler(
+        entry_points=[CommandHandler('kkfofa', kkfofa_command)],
+        states={
+            1: [CallbackQueryHandler(query_mode_callback)],
+            ASK_DATE_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date_range_from_message)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
+    )
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(add_api_conv)
+    application.add_handler(set_proxy_conv)
+    application.add_handler(CommandHandler("delproxy", del_proxy))
+    application.add_handler(CommandHandler("root", manage_api))
+    application.add_handler(CommandHandler("vip", manage_vip))
+    application.add_handler(kkfofa_conv)
+    application.add_handler(CommandHandler("debug", debug_command)) # 添加调试命令
+
+    logger.info("Bot is running...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
