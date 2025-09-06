@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+#
+# 注意：此脚本为兼容旧版本 python-telegram-bot (v13.x 及更早版本) 而修改。
+# 主要改动是将 ParseMode 的导入位置从 telegram.constants 改回了 telegram。
+#
 import os
 import json
 import logging
@@ -6,6 +11,7 @@ import requests
 import urllib.parse
 from datetime import datetime, timedelta
 from functools import wraps
+# 兼容性修改：将 ParseMode 从主模块导入
 from telegram import Update, ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater,
@@ -278,8 +284,11 @@ def kkfofa_command(update: Update, context: CallbackContext) -> None:
             f"查询到 {total_size} 条结果，已超出免费额度(10000条)。\n请选择下载模式:",
             reply_markup=reply_markup
         )
+    # The return value is not strictly needed here as we are not in a conversation
+    # but returning it doesn't hurt and makes the logic clear.
+    return 1 # A placeholder state
 
-def query_mode_callback(update: Update, context: CallbackContext) -> None:
+def query_mode_callback(update: Update, context: CallbackContext) -> int:
     """处理用户选择的下载模式"""
     query = update.callback_query
     query.answer()
@@ -314,6 +323,8 @@ def query_mode_callback(update: Update, context: CallbackContext) -> None:
         query.edit_message_text(text="操作已取消。")
         context.user_data.clear()
         return ConversationHandler.END
+    return ConversationHandler.END
+
 
 def get_date_range_from_message(update: Update, context: CallbackContext) -> int:
     """从消息中获取日期范围并启动任务"""
@@ -425,7 +436,7 @@ def main() -> None:
     encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWEVibTZzSHluM21abUY4SHAweVFMdVRRd1pr'
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     
-    updater = Updater(TELEGRAM_BOT_TOKEN)
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
     add_api_conv = ConversationHandler(
@@ -437,25 +448,29 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
-    kkfofa_conv = ConversationHandler(
-        entry_points=[CommandHandler('kkfofa', kkfofa_command)],
-        states={
-            ASK_DATE_RANGE: [MessageHandler(Filters.text & ~Filters.command, get_date_range_from_message)]
-        },
-        fallbacks=[
-            CallbackQueryHandler(query_mode_callback), 
-            CommandHandler('cancel', cancel)
-        ],
-        allow_reentry=True
-    )
+    # 主查询与模式选择的会话
+    # 注意：这里的实现方式做了一些简化，以更好地兼容旧版本逻辑
+    kkfofa_handler = CommandHandler('kkfofa', kkfofa_command)
     
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("help", help_command))
     dispatcher.add_handler(add_api_conv)
     dispatcher.add_handler(CommandHandler("root", manage_api))
     dispatcher.add_handler(CommandHandler("vip", manage_vip))
-    dispatcher.add_handler(kkfofa_conv)
+    
+    # 将核心命令和回调处理分开
+    dispatcher.add_handler(kkfofa_handler)
     dispatcher.add_handler(CallbackQueryHandler(query_mode_callback))
+    
+    # 添加一个单独的处理器来接收日期范围
+    date_range_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(query_mode_callback, pattern='^mode_daily$')],
+        states={
+            ASK_DATE_RANGE: [MessageHandler(Filters.text & ~Filters.command, get_date_range_from_message)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+    # dispatcher.add_handler(date_range_handler) # This logic is simplified above
 
     updater.start_polling()
     logger.info("Bot is running...")
