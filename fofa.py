@@ -7,7 +7,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 from functools import wraps
 # v20.x 版本的正确导入方式
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -18,6 +18,10 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters
 )
+
+# --- 兼容性修改：禁用SSL证书验证警告 ---
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 基础配置 ---
 logging.basicConfig(
@@ -83,7 +87,8 @@ def verify_fofa_api(email, key):
     """验证Fofa API是否有效"""
     url = f"https://fofa.so/api/v1/info/my?email={urllib.parse.quote(email)}&key={key}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        # 兼容性修改：添加 verify=False 跳过SSL验证
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
         res.raise_for_status()
         data = res.json()
         return "error" not in data, data
@@ -95,7 +100,8 @@ def fetch_fofa_data(email, key, query, page=1, page_size=10000, fields="host"):
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
     url = f"https://fofa.so/api/v1/search/all?email={urllib.parse.quote(email)}&key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        # 兼容性修改：添加 verify=False 跳过SSL验证
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
         res.raise_for_status()
         data = res.json()
         return data, data.get("errmsg")
@@ -106,7 +112,7 @@ def fetch_fofa_data(email, key, query, page=1, page_size=10000, fields="host"):
 # --- Bot 命令处理函数 ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('欢迎使用 Fofa 查询 Bot！\n使用 /help 查看所有可用命令。')
+    await update.message.reply_text('欢迎使用 Fofa 查询 Bot！\n点击输入框旁的 "/" 或 "菜单" 按钮查看所有可用命令。')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = """
@@ -235,7 +241,6 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("请输入查询语句。\n用法: `/kkfofa <查询语句>`")
         return ConversationHandler.END
     
-    # 修正: 为后台任务准备数据
     job_data = {'base_query': query_text, 'chat_id': update.effective_chat.id}
 
     if "daterange:" in query_text.lower():
@@ -432,13 +437,26 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
             os.remove(output_filename)
 
 
+async def post_init(application: Application):
+    """在Bot启动后设置命令菜单"""
+    commands = [
+        BotCommand("kkfofa", "查询Fofa"),
+        BotCommand("root", "查看/管理API (仅管理员)"),
+        BotCommand("addapi", "添加API (仅管理员)"),
+        BotCommand("vip", "管理管理员 (仅超级管理员)"),
+        BotCommand("help", "获取帮助"),
+        BotCommand("cancel", "取消当前操作"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("已成功设置命令菜单！")
+
+
 def main() -> None:
     """启动Bot"""
-    # Telegram Bot Token (已使用Base64加密)
-    encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==' # <--- 已更新为您的新Token
+    encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     add_api_conv = ConversationHandler(
         entry_points=[CommandHandler('addapi', add_api_start)],
