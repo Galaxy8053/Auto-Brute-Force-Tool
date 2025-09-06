@@ -50,13 +50,7 @@ def load_config():
             logger.error("致命错误：SUPER_ADMIN_ID 不是有效的Base64编码！为了您的安全，脚本已停止运行。")
             sys.exit(1)
         SUPER_ADMIN_ID = int(base64.b64decode(encoded_super_admin_id).decode('utf-8'))
-        config = {
-            "apis": [], 
-            "admins": [SUPER_ADMIN_ID], 
-            "super_admin": SUPER_ADMIN_ID, 
-            "proxy": "",
-            "dedup_mode": "exact"
-        }
+        config = { "apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID, "proxy": "", "dedup_mode": "exact" }
         save_config(config)
         return config
     with open(CONFIG_FILE, 'r') as f:
@@ -148,7 +142,6 @@ def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     return _make_request(url)
 
 def fetch_host_details(key, host):
-    """获取单个主机的详细信息"""
     url = f"https://fofa.info/api/v1/host/{host}?key={key}"
     data, error, _ = _make_request(url)
     return data, error
@@ -169,20 +162,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     `/kkfofa <查询语句>` - 执行资产搜索。
     `/host <IP/Domain>` - 查询单个主机详细情报。\n
     *⚙️ 管理与设置 (仅管理员)*
-    `/settings` - 打开交互式设置菜单，管理API、代理和去重模式。\n
+    `/settings` - 打开交互式设置菜单。\n
     *💡 重要提示*
-    如果您的查询语句包含多个 `||` 符号, 请选中查询内容, 然后使用快捷键 `Ctrl+Shift+M` (或在手机上使用三个反引号 ```) 将其变为代码模式发送, 否则Telegram会自动转义 `||` 符号导致查询失败。\n
+    如果查询包含 `||` 符号, 请选中查询内容后使用快捷键 `Ctrl+Shift+M` (或用```包裹) 以代码模式发送。\n
     *❓ 通用*
     `/help` - 显示此帮助信息。
-    `/cancel` - 取消当前操作 (如添加API)。
+    `/cancel` - 取消当前操作。
     """
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """显示设置的主菜单"""
     is_super = update.effective_user.id == CONFIG.get('super_admin')
-    
     keyboard = [
         [InlineKeyboardButton("🔑 API 管理", callback_data='settings_api')],
         [InlineKeyboardButton("🌐 代理设置", callback_data='settings_proxy')],
@@ -190,7 +181,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ]
     if is_super:
         keyboard.append([InlineKeyboardButton("🛡️ 权限管理", callback_data='settings_vip')])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("⚙️ *设置菜单*\n\n请选择您要管理的项目:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
@@ -444,7 +434,7 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         await query.message.delete()
     
     elif action == 'api_remove_prompt':
-        await query.message.reply_text("请使用命令 `/settings` 重新打开菜单，然后根据提示使用 `/root remove <编号>`。")
+        await query.message.reply_text("请使用 `/settings` 重新打开菜单，然后根据提示使用命令 `/root remove <编号>`。")
         await query.message.delete()
 
     elif action == 'proxy_set':
@@ -472,10 +462,7 @@ def normalize_for_dedup(result_str: str) -> str:
 
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
-    chat_id = job_data['chat_id']
-    query_text = job_data['base_query']
-    total_size = job_data['total_size']
-    api_key = job_data['api_key']
+    chat_id, query_text, total_size, api_key = job_data['chat_id'], job_data['base_query'], job_data['total_size'], job_data['api_key']
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     output_filename = f"fofa_full_{timestamp}.txt"
     page_size = 10000 
@@ -510,11 +497,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
 
 async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
-    chat_id = job_data['chat_id']
-    base_query = job_data['base_query']
-    start_date = job_data['start_date']
-    end_date = job_data['end_date']
-    api_key = job_data['api_key']
+    chat_id, base_query, start_date, end_date, api_key = job_data['chat_id'], job_data['base_query'], job_data['start_date'], job_data['end_date'], job_data['api_key']
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     output_filename = f"fofa_daily_{timestamp}.txt"
     unique_results = set()
@@ -574,11 +557,7 @@ def main() -> None:
     encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
     
     if not is_base64(encoded_token):
-        logger.error("\n\n" + "="*60)
-        logger.error("    !!! 致命安全错误：TELEGRAM_BOT_TOKEN 未使用Base64加密 !!!")
-        logger.error("    为了保护您的机器人不被盗用，脚本已停止运行。")
-        logger.error("    请对您的Token字符串进行Base64编码后，再填入脚本。")
-        logger.error("="*60 + "\n")
+        logger.error("\n\n" + "="*60 + "\n    !!! 致命安全错误：TELEGRAM_BOT_TOKEN 未使用Base64加密 !!!\n" + "    为了保护您的机器人不被盗用，脚本已停止运行。\n" + "    请对您的Token字符串进行Base64编码后，再填入脚本。\n" + "="*60 + "\n")
         sys.exit(1)
 
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
@@ -614,6 +593,8 @@ def main() -> None:
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CommandHandler("host", host_command))
     application.add_handler(CommandHandler("settings", settings_command))
+    # --- 修正：将 /root 命令作为 /settings 的别名 ---
+    application.add_handler(CommandHandler("root", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
 
