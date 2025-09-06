@@ -40,6 +40,7 @@ CONFIG_FILE = 'config.json'
 GET_KEY = range(1)
 ASK_DATE_RANGE = range(1, 2)
 GET_PROXY = range(2,3)
+REMOVE_API_PROMPT = range(3,4)
 
 # --- 权限与配置管理 ---
 def load_config():
@@ -440,7 +441,7 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         await query.message.delete()
     
     elif action == 'api_remove_prompt':
-        await query.message.reply_text("请使用命令 `/settings remove <编号>`。")
+        await query.message.reply_text("请使用 `/settings remove <编号>`。")
         await query.message.delete()
 
     elif action == 'proxy_set':
@@ -629,7 +630,7 @@ def main() -> None:
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CommandHandler("host", host_command))
     application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("root", settings_command)) # /root作为/settings的别名
+    application.add_handler(CommandHandler("root", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
 
