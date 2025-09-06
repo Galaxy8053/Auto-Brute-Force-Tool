@@ -45,17 +45,22 @@ GET_PROXY = range(2,3)
 def load_config():
     """加载配置文件，如果不存在则创建"""
     if not os.path.exists(CONFIG_FILE):
-        encoded_super_admin_id = 'NzY5NzIzNTM1OA==' # 您已提供
+        encoded_super_admin_id = 'NzY5NzIzNTM1OA=='
         if not is_base64(encoded_super_admin_id):
             logger.error("致命错误：SUPER_ADMIN_ID 不是有效的Base64编码！为了您的安全，脚本已停止运行。")
             sys.exit(1)
         SUPER_ADMIN_ID = int(base64.b64decode(encoded_super_admin_id).decode('utf-8'))
-        config = { "apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID, "proxy": "", "dedup_mode": "exact" }
+        config = {
+            "apis": [], 
+            "admins": [SUPER_ADMIN_ID], 
+            "super_admin": SUPER_ADMIN_ID, 
+            "proxy": "",
+            "dedup_mode": "exact"
+        }
         save_config(config)
         return config
     with open(CONFIG_FILE, 'r') as f:
         config = json.load(f)
-        # 兼容旧版config
         if 'proxy' not in config: config['proxy'] = ""
         if 'dedup_mode' not in config: config['dedup_mode'] = "exact"
         save_config(config)
@@ -189,7 +194,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("⚙️ *设置菜单*\n\n请选择您要管理的项目:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-# ... (其他命令处理函数) ...
 @restricted
 async def add_api_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("好的，请直接发送您的 Fofa API Key。")
@@ -253,7 +257,6 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     debug_report = (f"*🕵️‍♂️ Fofa API 调试报告 🕵️‍♂️*\n\n" f"*--- 请求详情 ---*\n" f"*URL*: `{debug_info['URL']}`\n" f"*代理*: `{debug_info['Proxies'] or '无'}`\n\n" f"*--- 响应详情 ---*\n" f"*状态码*: `{debug_info['Response_Status']}`\n" f"*响应头*:\n`{headers_str}`\n\n" f"*--- 结果 ---*\n" f"*请求是否成功?* {success_str}\n" f"*错误信息*: `{error or '无'}`\n\n" f"*--- 底层异常 (如有) ---*\n" f"`{exception_str}`\n\n" f"*--- 原始响应体 (预览) ---*\n" f"```\n{body_str}\n```")
     await update.message.reply_text(debug_report, parse_mode=ParseMode.MARKDOWN)
 
-# ... (kkfofa_command 和其他相关函数逻辑不变, 仅在调用时传递api_key) ...
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not CONFIG['apis']:
@@ -350,7 +353,6 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("❌ 格式错误，请重新输入 (格式: `YYYY-MM-DD to YYYY-MM-DD`)\n或使用 /cancel 取消。")
         return ASK_DATE_RANGE
 
-# --- 新增 /host 命令 ---
 @restricted
 async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not CONFIG['apis']:
@@ -369,7 +371,6 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.edit_text(f"❌ 查询失败: {error}")
         return
 
-    # 格式化输出
     info = (
         f"🎯 *主机情报: `{data.get('host', 'N/A')}`*\n\n"
         f"🗺️ *地理位置*: {data.get('country_name', 'N/A')} ({data.get('country_code', 'N/A')})\n"
@@ -388,63 +389,43 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await msg.edit_text(info, parse_mode=ParseMode.MARKDOWN)
 
-# --- Settings Callback Query Handlers ---
 @restricted
 async def settings_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    # 拆分 callback_data
     parts = query.data.split('_')
     menu = parts[1]
 
     if menu == 'main':
+        await query.message.delete()
         await settings_command(update, context)
-        await query.message.delete() # 删除旧消息，或用edit_text
         return
 
     if menu == 'api':
-        # API管理菜单
         api_message = "当前没有存储任何API密钥。"
         if CONFIG['apis']:
             api_message = "已存储的API Key列表 (为保护隐私，仅显示部分):\n"
             for i, key in enumerate(CONFIG['apis']):
                 masked_key = key[:4] + '...' + key[-4:]
                 api_message += f"{i+1}. `{masked_key}`\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("➕ 添加新API", callback_data='api_add')],
-            [InlineKeyboardButton("➖ 删除API", callback_data='api_remove_prompt')],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],
-        ]
+        keyboard = [[InlineKeyboardButton("➕ 添加新API", callback_data='action_api_add')],[InlineKeyboardButton("➖ 删除API", callback_data='action_api_remove_prompt')],[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"🔑 *API 管理*\n\n{api_message}", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
     elif menu == 'proxy':
-        # 代理设置菜单
         proxy_message = f"当前代理: `{CONFIG.get('proxy') or '未设置'}`"
-        keyboard = [
-            [InlineKeyboardButton("✏️ 设置/更新代理", callback_data='proxy_set')],
-            [InlineKeyboardButton("🗑️ 删除代理", callback_data='proxy_delete')],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],
-        ]
+        keyboard = [[InlineKeyboardButton("✏️ 设置/更新代理", callback_data='action_proxy_set')],[InlineKeyboardButton("🗑️ 删除代理", callback_data='action_proxy_delete')],[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"🌐 *代理设置*\n\n{proxy_message}", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
     elif menu == 'dedup':
-        # 去重模式菜单
         current_mode = CONFIG.get('dedup_mode', 'exact')
         mode_text = "智能去重 (忽略协议头)" if current_mode == 'smart' else "精确去重 (完整匹配)"
-        keyboard = [
-            [InlineKeyboardButton("🤓 智能去重", callback_data='dedup_set_smart')],
-            [InlineKeyboardButton("🎯 精确去重", callback_data='dedup_set_exact')],
-            [InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],
-        ]
+        keyboard = [[InlineKeyboardButton("🤓 智能去重", callback_data='action_dedup_set_smart')],[InlineKeyboardButton("🎯 精确去重", callback_data='action_dedup_set_exact')],[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')],]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"🗑️ *去重模式*\n\n当前模式: *{mode_text}*", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     
     elif menu == 'vip':
-        # 权限管理
         admin_list = "\n".join([f"- `{admin_id}`" for admin_id in CONFIG['admins']])
         message = f"🛡️ *权限管理*\n\n当前管理员列表:\n{admin_list}\n\n请直接使用命令 `/vip <add/remove> <用户ID>` 进行操作。"
         keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]
@@ -456,15 +437,14 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
     """处理设置菜单中的具体操作"""
     query = update.callback_query
     await query.answer()
-    
-    action = query.data
+    action = query.data.replace('action_', '')
 
     if action == 'api_add':
         await query.message.reply_text("请使用 `/addapi` 命令开始添加流程。")
         await query.message.delete()
     
     elif action == 'api_remove_prompt':
-        await query.message.reply_text("请使用 `/root remove <编号>` 命令来删除API。")
+        await query.message.reply_text("请使用命令 `/settings` 重新打开菜单，然后根据提示使用 `/root remove <编号>`。")
         await query.message.delete()
 
     elif action == 'proxy_set':
@@ -483,7 +463,13 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         mode_text = "智能去重 (忽略协议头)" if new_mode == 'smart' else "精确去重 (完整匹配)"
         await query.edit_message_text(f"✅ 去重模式已更新为: *{mode_text}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]), parse_mode=ParseMode.MARKDOWN)
 
-# --- 后台任务函数 ---
+# --- 辅助与后台任务 ---
+def normalize_for_dedup(result_str: str) -> str:
+    """为智能去重模式标准化字符串"""
+    if result_str.startswith("http://"): return result_str[7:]
+    if result_str.startswith("https://"): return result_str[8:]
+    return result_str
+
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id = job_data['chat_id']
@@ -576,12 +562,12 @@ async def post_init(application: Application):
     commands = [
         BotCommand("kkfofa", "🔍 资产搜索"),
         BotCommand("host", "ℹ️ 主机详情"),
-        BotCommand("settings", "⚙️ 设置 (仅管理员)"),
+        BotCommand("settings", "⚙️ 设置 (管理员)"),
         BotCommand("help", "❓ 获取帮助"),
         BotCommand("cancel", "❌ 取消当前操作"),
     ]
     await application.bot.set_my_commands(commands)
-    logger.info("已成功设置命令菜单！")
+    logger.info("✅ 已成功设置命令菜单！")
 
 def main() -> None:
     """启动Bot"""
@@ -600,12 +586,12 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     add_api_conv = ConversationHandler(
-        entry_points=[CommandHandler('addapi', add_api_start), CallbackQueryHandler(add_api_start, pattern='^api_add$')],
+        entry_points=[CommandHandler('addapi', add_api_start), CallbackQueryHandler(add_api_start, pattern='^action_api_add$')],
         states={ GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)] },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
     set_proxy_conv = ConversationHandler(
-        entry_points=[CommandHandler('setproxy', set_proxy_start), CallbackQueryHandler(set_proxy_start, pattern='^proxy_set$')],
+        entry_points=[CommandHandler('setproxy', set_proxy_start), CallbackQueryHandler(set_proxy_start, pattern='^action_proxy_set$')],
         states={ GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)] },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
@@ -623,19 +609,17 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(add_api_conv)
     application.add_handler(set_proxy_conv)
-    application.add_handler(CommandHandler("root", manage_api)) # Keep for backward compatibility or direct access
     application.add_handler(CommandHandler("vip", manage_vip))
     application.add_handler(kkfofa_conv)
     application.add_handler(CommandHandler("debug", debug_command))
-    application.add_handler(CommandHandler("dedup", set_dedup_mode))
     application.add_handler(CommandHandler("host", host_command))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
-    application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^(api_|proxy_|dedup_)'))
-
+    application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
 
     logger.info("🚀 机器人已启动，开始轮询...")
     application.run_polling()
 
 if __name__ == '__main__':
     main()
+
