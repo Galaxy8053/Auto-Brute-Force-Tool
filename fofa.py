@@ -19,7 +19,7 @@ from telegram.ext import (
     filters
 )
 
-# --- 兼容性修改：禁用SSL证书验证警告 ---
+# --- 禁用SSL证书验证警告 ---
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = 'config.json'
 
 # Conversation states
-EMAIL, KEY = range(2)
-ASK_DATE_RANGE = range(2, 3)
+GET_KEY = range(1)
+ASK_DATE_RANGE = range(1, 2)
 
 # --- 权限与配置管理 ---
 def load_config():
@@ -42,6 +42,7 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         encoded_super_admin_id = 'NzY5NzIzNTM1OA=='
         SUPER_ADMIN_ID = int(base64.b64decode(encoded_super_admin_id).decode('utf-8'))
+        # 配置中不再存储email，只存储key
         config = {"apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID}
         save_config(config)
         return config
@@ -77,17 +78,16 @@ def super_admin_restricted(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- Fofa 核心逻辑 ---
+# --- Fofa 核心逻辑 (已移除email参数) ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36"
 }
 TIMEOUT = 20
 
-def verify_fofa_api(email, key):
+def verify_fofa_api(key):
     """验证Fofa API是否有效"""
-    url = f"https://fofa.so/api/v1/info/my?email={urllib.parse.quote(email)}&key={key}"
+    url = f"https://fofa.info/api/v1/info/my?key={key}"
     try:
-        # 兼容性修改：添加 verify=False 跳过SSL验证
         res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
         res.raise_for_status()
         data = res.json()
@@ -95,12 +95,11 @@ def verify_fofa_api(email, key):
     except requests.exceptions.RequestException as e:
         return False, {'errmsg': str(e)}
 
-def fetch_fofa_data(email, key, query, page=1, page_size=10000, fields="host"):
+def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     """从Fofa获取数据"""
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
-    url = f"https://fofa.so/api/v1/search/all?email={urllib.parse.quote(email)}&key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}"
+    url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}"
     try:
-        # 兼容性修改：添加 verify=False 跳过SSL验证
         res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
         res.raise_for_status()
         data = res.json()
@@ -121,50 +120,35 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     `/kkfofa <查询语句>`
     核心查询命令。如果结果超过1万条，会弹出交互式菜单供您选择下载模式。
 
-    *快捷方式 (高级)*:
-    `/kkfofa <查询语句> daterange:YYYY-MM-DD to YYYY-MM-DD`
-    直接启动按天下载模式，无需交互。
-
     *API管理 (仅管理员)*:
-    `/addapi` - 启动对话，添加一组新的Fofa API。
-    `/root` - 查看已存储的API列表。
-    `/root remove <编号>` - 删除指定的API。
+    `/addapi` - 添加一个新的Fofa API Key。
+    `/root` - 查看/管理已存储的API Key。
 
     *权限管理 (仅超级管理员)*:
-    `/vip` - 查看管理员列表。
     `/vip <add/remove> <用户ID>` - 添加或移除管理员。
-
+    
     *通用*:
     `/help` - 显示此帮助信息。
-    `/cancel` - 在添加API或输入日期范围时取消操作。
+    `/cancel` - 取消当前操作。
     """
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def add_api_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("好的，请发送您的 Fofa Email 地址。")
-    return EMAIL
-
-async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['fofa_email'] = update.message.text
-    await update.message.reply_text("收到！现在请发送您的 Fofa API Key。")
-    return KEY
+    await update.message.reply_text("好的，请直接发送您的 Fofa API Key。")
+    return GET_KEY
 
 async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    email = context.user_data['fofa_email']
     key = update.message.text
     await update.message.reply_text("正在验证API密钥，请稍候...")
-    is_valid, data = verify_fofa_api(email, key)
+    is_valid, data = verify_fofa_api(key)
     if is_valid:
-        for api in CONFIG['apis']:
-            if api['email'] == email:
-                api['key'] = key
-                save_config(CONFIG)
-                await update.message.reply_text(f"成功：已更新该Email对应的API Key。\n你好, {data.get('username', 'user')}!")
-                return ConversationHandler.END
-        CONFIG['apis'].append({'email': email, 'key': key})
-        save_config(CONFIG)
-        await update.message.reply_text(f"成功：API密钥已验证并成功添加！\n你好, {data.get('username', 'user')}!")
+        if key not in CONFIG['apis']:
+            CONFIG['apis'].append(key)
+            save_config(CONFIG)
+            await update.message.reply_text(f"成功：API密钥已验证并成功添加！\n你好, {data.get('username', 'user')}!")
+        else:
+            await update.message.reply_text(f"提示：这个API Key已经存在。\n你好, {data.get('username', 'user')}!")
     else:
         await update.message.reply_text(f"错误：API验证失败！原因: {data.get('errmsg', '未知错误')}")
     return ConversationHandler.END
@@ -181,18 +165,19 @@ async def manage_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not CONFIG['apis']:
             await update.message.reply_text("当前没有存储任何API密钥。使用 `/addapi` 添加。")
             return
-        message = "已存储的API列表 (Email):\n"
-        for i, api in enumerate(CONFIG['apis']):
-            message += f"{i+1}. `{api['email']}`\n"
-        message += "\n使用 `/root remove <编号>` 来删除API。"
+        message = "已存储的API Key列表 (为保护隐私，仅显示部分):\n"
+        for i, key in enumerate(CONFIG['apis']):
+            masked_key = key[:4] + '...' + key[-4:]
+            message += f"{i+1}. `{masked_key}`\n"
+        message += "\n使用 `/root remove <编号>` 来删除API Key。"
         await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
     elif args[0].lower() == 'remove' and len(args) > 1:
         try:
             index = int(args[1]) - 1
             if 0 <= index < len(CONFIG['apis']):
-                removed_api = CONFIG['apis'].pop(index)
+                CONFIG['apis'].pop(index)
                 save_config(CONFIG)
-                await update.message.reply_text(f"成功移除了API: {removed_api['email']}")
+                await update.message.reply_text(f"成功移除了编号为 {index+1} 的API Key。")
             else:
                 await update.message.reply_text("错误：编号无效。")
         except ValueError:
@@ -200,6 +185,7 @@ async def manage_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         await update.message.reply_text("用法: `/root` 或 `/root remove <编号>`")
 
+# ... (vip管理, kkfofa, 后台任务等函数的逻辑保持不变，但API调用会相应简化) ...
 @super_admin_restricted
 async def manage_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
@@ -236,12 +222,13 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("错误：请先使用 `/addapi` 添加至少一个Fofa API。")
         return ConversationHandler.END
 
+    api_key = CONFIG['apis'][0] # 使用第一个API Key
     query_text = " ".join(context.args)
     if not query_text:
         await update.message.reply_text("请输入查询语句。\n用法: `/kkfofa <查询语句>`")
         return ConversationHandler.END
     
-    job_data = {'base_query': query_text, 'chat_id': update.effective_chat.id}
+    job_data = {'base_query': query_text, 'chat_id': update.effective_chat.id, 'api_key': api_key}
 
     if "daterange:" in query_text.lower():
         try:
@@ -258,10 +245,9 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
 
 
-    api = CONFIG['apis'][0]
     msg = await update.message.reply_text("正在查询数据总数，请稍候...")
     
-    data, error = fetch_fofa_data(api['email'], api['key'], query_text, page_size=1)
+    data, error = fetch_fofa_data(api_key, query_text, page_size=1)
     if error:
         await msg.edit_text(f"查询出错: {error}")
         return ConversationHandler.END
@@ -301,6 +287,7 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     base_query = context.user_data.get('query')
     total_size = context.user_data.get('total_size')
     chat_id = query.message.chat_id
+    api_key = CONFIG['apis'][0]
 
     if mode == 'mode_daily':
         await query.edit_message_text(text="您选择了按天下载模式。\n请输入起止日期 (格式: `YYYY-MM-DD to YYYY-MM-DD`)")
@@ -308,13 +295,12 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     elif mode == 'mode_full':
         await query.edit_message_text(text=f"已开始全量下载任务 ({total_size}条)，请注意这可能会消耗您的F点或会员权益。")
-        job_data = {'base_query': base_query, 'total_size': total_size, 'chat_id': chat_id}
+        job_data = {'base_query': base_query, 'total_size': total_size, 'chat_id': chat_id, 'api_key': api_key}
         context.job_queue.run_once(run_full_download_query, 0, data=job_data, name=f"full_download_{chat_id}")
         return ConversationHandler.END
 
     elif mode == 'mode_preview':
-        api = CONFIG['apis'][0]
-        data, error = fetch_fofa_data(api['email'], api['key'], base_query, page_size=20)
+        data, error = fetch_fofa_data(api_key, base_query, page_size=20)
         if error:
             await query.edit_message_text(f"预览失败: {error}")
             return ConversationHandler.END
@@ -335,6 +321,7 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
     date_range_str = update.message.text
     base_query = context.user_data.get('query')
     chat_id = update.effective_chat.id
+    api_key = CONFIG['apis'][0]
 
     try:
         date_parts = date_range_str.lower().split("to")
@@ -347,7 +334,8 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
             'chat_id': chat_id, 
             'base_query': base_query,
             'start_date': start_date,
-            'end_date': end_date
+            'end_date': end_date,
+            'api_key': api_key
         }
         context.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{chat_id}")
         context.user_data.clear()
@@ -363,7 +351,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     chat_id = job.data['chat_id']
     query_text = job.data['base_query']
     total_size = job.data['total_size']
-    api = CONFIG['apis'][0]
+    api_key = job.data['api_key']
     
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     output_filename = f"fofa_full_{timestamp}.txt"
@@ -374,7 +362,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     with open(output_filename, 'w', encoding='utf-8') as f:
         for page in range(1, pages_to_fetch + 1):
             await context.bot.send_message(chat_id, f"正在下载第 {page}/{pages_to_fetch} 页...")
-            data, error = fetch_fofa_data(api['email'], api['key'], query_text, page=page, page_size=page_size)
+            data, error = fetch_fofa_data(api_key, query_text, page=page, page_size=page_size)
             if error:
                 await context.bot.send_message(chat_id, f"下载第 {page} 页时出错: {error}")
                 continue
@@ -399,7 +387,7 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
     base_query = job.data['base_query']
     start_date = job.data['start_date']
     end_date = job.data['end_date']
-    api = CONFIG['apis'][0]
+    api_key = job.data['api_key']
     total_found, current_date = 0, start_date
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     output_filename = f"fofa_daily_{timestamp}.txt"
@@ -411,7 +399,7 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, f"正在下载 `{date_str}` 的数据...", parse_mode=ParseMode.MARKDOWN)
             page, daily_count = 1, 0
             while True:
-                data, error = fetch_fofa_data(api['email'], api['key'], daily_query, page=page, page_size=10000)
+                data, error = fetch_fofa_data(api_key, daily_query, page=page, page_size=10000)
                 if error:
                     await context.bot.send_message(chat_id, f"下载 `{date_str}` 数据时出错: {error}", parse_mode=ParseMode.MARKDOWN)
                     break 
@@ -461,8 +449,7 @@ def main() -> None:
     add_api_conv = ConversationHandler(
         entry_points=[CommandHandler('addapi', add_api_start)],
         states={
-            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
-            KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
+            GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
