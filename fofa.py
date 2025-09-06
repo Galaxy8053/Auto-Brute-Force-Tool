@@ -402,11 +402,12 @@ async def settings_callback_query(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     parts = query.data.split('_')
     menu = parts[1]
-    
+
     if menu == 'main':
+        # 修正：从回调中获取消息并删除
         await query.message.delete()
-        # 修正：确保从 update 对象中获取消息来进行回复
-        await settings_command(update.callback_query, context)
+        # 修正：直接调用函数，并传递 update 对象，让它能发送新消息
+        await settings_command(update, context)
         return
 
     if menu == 'api':
@@ -435,7 +436,7 @@ async def settings_callback_query(update: Update, context: ContextTypes.DEFAULT_
     
     elif menu == 'vip':
         admin_list = "\n".join([f"- `{admin_id}`" for admin_id in CONFIG['admins']])
-        message = f"🛡️ *权限管理*\n\n当前管理员列表:\n{admin_list}\n\n请在下方直接输入命令进行操作:\n`/vip add <用户ID>`\n`/vip remove <用户ID>`"
+        message = f"🛡️ *权限管理*\n\n当前管理员列表:\n{admin_list}\n\n请直接使用命令 `/vip <add/remove> <用户ID>` 进行操作。"
         keyboard = [[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -448,16 +449,17 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
     action = query.data.replace('action_', '')
 
     if action == 'api_add':
-        await query.edit_message_text("请直接发送您的 Fofa API Key。")
-        return GET_KEY
+        await query.message.delete()
+        await context.bot.send_message(chat_id=query.effective_chat.id, text="请使用 `/addapi` 命令开始添加流程。")
     
     elif action == 'api_remove_prompt':
-        await query.edit_message_text("请输入您要删除的API Key的编号。")
+        await query.message.delete()
+        await context.bot.send_message(chat_id=query.effective_chat.id, text="请输入您要删除的API Key的编号。")
         return REMOVE_API_PROMPT
 
     elif action == 'proxy_set':
-        await query.edit_message_text("请输入您的代理地址, 例如 `http://127.0.0.1:7890`。")
-        return GET_PROXY
+        await query.message.delete()
+        await context.bot.send_message(chat_id=query.effective_chat.id, text="请使用 `/setproxy` 命令开始设置流程。")
 
     elif action == 'proxy_delete':
         CONFIG['proxy'] = ""
@@ -471,7 +473,6 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         mode_text = "智能去重" if new_mode == 'smart' else "精确去重"
         await query.edit_message_text(f"✅ 去重模式已更新为: *{mode_text}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]), parse_mode=ParseMode.MARKDOWN)
     
-    # 修正：当不是进入新会话状态时，返回 END
     return ConversationHandler.END
 
 # --- 终极修正：恢复被错误删除的 manage_vip 函数 ---
@@ -615,18 +616,20 @@ def main() -> None:
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    # 将所有交互都整合到settings的会话中
+    # --- 终极修正：将所有交互都整合到一个统一的settings会话中 ---
     settings_conv = ConversationHandler(
         entry_points=[
             CommandHandler('settings', settings_command),
             CommandHandler('root', settings_command), # root作为别名
+            CallbackQueryHandler(settings_callback_query, pattern='^settings_')
         ],
         states={
-            1: [CallbackQueryHandler(settings_action_callback_query, pattern='^action_')],
+            1: [CallbackQueryHandler(settings_action_callback_query)],
             GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
             GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
         },
-        fallbacks=[CommandHandler('cancel', cancel), CallbackQueryHandler(settings_callback_query, pattern='^settings_')],
+        fallbacks=[CommandHandler('cancel', cancel)],
+        # 修正：允许用户在任何时候重新进入settings
         allow_reentry=True
     )
     
@@ -646,11 +649,12 @@ def main() -> None:
     application.add_handler(kkfofa_conv)
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CommandHandler("host", host_command))
-    application.add_handler(settings_conv) # 用统一的settings会话
+    application.add_handler(settings_conv) 
     
-    # 修正：将顶层的回调处理器也加入，确保所有按钮都能响应
-    application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
+    # 修正：添加顶层的回调处理器，确保所有非会话内的按钮都能响应
     application.add_handler(CallbackQueryHandler(query_mode_callback, pattern='^mode_'))
+    application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
+
 
     logger.info("🚀 机器人已启动，开始轮询...")
     application.run_polling()
