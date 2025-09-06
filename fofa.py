@@ -434,7 +434,8 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
 
 def main() -> None:
     """启动Bot"""
-    encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWEVibTZzSHluM21abUY4SHAweVFMdVRRd1pr'
+    # Telegram Bot Token (已使用Base64加密)
+    encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==' # <--- 已更新为您的新Token
     TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -470,4 +471,13 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+```
 
+### 最后的运行步骤
+
+1.  **保存文件**: 将上面的代码**完整地**复制并覆盖您服务器上的 `fofa.py` 文件。
+2.  **激活环境**: 确保您的命令行提示符是 `(venv) #` 开头的。如果不是，请先执行 `. venv/bin/activate`。
+3.  **运行**: 在虚拟环境中，执行：
+    ```bash
+    python3 fofa.py
+    
