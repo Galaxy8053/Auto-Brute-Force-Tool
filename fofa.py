@@ -50,7 +50,13 @@ def load_config():
             logger.error("致命错误：SUPER_ADMIN_ID 不是有效的Base64编码！为了您的安全，脚本已停止运行。")
             sys.exit(1)
         SUPER_ADMIN_ID = int(base64.b64decode(encoded_super_admin_id).decode('utf-8'))
-        config = { "apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID, "proxy": "", "dedup_mode": "exact" }
+        config = {
+            "apis": [], 
+            "admins": [SUPER_ADMIN_ID], 
+            "super_admin": SUPER_ADMIN_ID, 
+            "proxy": "",
+            "dedup_mode": "exact"
+        }
         save_config(config)
         return config
     with open(CONFIG_FILE, 'r') as f:
@@ -434,7 +440,7 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         await query.message.delete()
     
     elif action == 'api_remove_prompt':
-        await query.message.reply_text("请使用 `/settings` 重新打开菜单，然后根据提示使用命令 `/root remove <编号>`。")
+        await query.message.reply_text("请使用命令 `/settings remove <编号>`。")
         await query.message.delete()
 
     elif action == 'proxy_set':
@@ -452,6 +458,36 @@ async def settings_action_callback_query(update: Update, context: ContextTypes.D
         save_config(CONFIG)
         mode_text = "智能去重 (忽略协议头)" if new_mode == 'smart' else "精确去重 (完整匹配)"
         await query.edit_message_text(f"✅ 去重模式已更新为: *{mode_text}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]]), parse_mode=ParseMode.MARKDOWN)
+
+# --- 终极修正：恢复被错误删除的 manage_vip 函数 ---
+@super_admin_restricted
+async def manage_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if len(args) != 2:
+        admin_list = "\n".join([f"- `{admin_id}`" for admin_id in CONFIG['admins']])
+        await update.message.reply_text(f"用法: `/vip <add/remove> <user_id>`\n\n*当前管理员列表:*\n{admin_list}", parse_mode=ParseMode.MARKDOWN)
+        return
+    action, user_id_str = args
+    try:
+        user_id = int(user_id_str)
+        if action.lower() == 'add':
+            if user_id not in CONFIG['admins']:
+                CONFIG['admins'].append(user_id)
+                save_config(CONFIG)
+                await update.message.reply_text(f"✅ 成功添加管理员: {user_id}")
+            else: await update.message.reply_text("ℹ️ 该用户已经是管理员。")
+        elif action.lower() == 'remove':
+            if user_id == CONFIG.get('super_admin'):
+                await update.message.reply_text("❌ 不能移除超级管理员！")
+                return
+            if user_id in CONFIG['admins']:
+                CONFIG['admins'].remove(user_id)
+                save_config(CONFIG)
+                await update.message.reply_text(f"✅ 成功移除管理员: {user_id}")
+            else: await update.message.reply_text("🤷‍♀️ 该用户不是管理员。")
+        else: await update.message.reply_text("❌ 无效的操作。请使用 `add` 或 `remove`。")
+    except ValueError: await update.message.reply_text("❌ 错误: User ID必须是数字。")
+
 
 # --- 辅助与后台任务 ---
 def normalize_for_dedup(result_str: str) -> str:
@@ -593,8 +629,7 @@ def main() -> None:
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(CommandHandler("host", host_command))
     application.add_handler(CommandHandler("settings", settings_command))
-    # --- 修正：将 /root 命令作为 /settings 的别名 ---
-    application.add_handler(CommandHandler("root", settings_command))
+    application.add_handler(CommandHandler("root", settings_command)) # /root作为/settings的别名
     application.add_handler(CallbackQueryHandler(settings_callback_query, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(settings_action_callback_query, pattern='^action_'))
 
