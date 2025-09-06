@@ -35,6 +35,7 @@ CONFIG_FILE = 'config.json'
 # Conversation states
 GET_KEY = range(1)
 ASK_DATE_RANGE = range(1, 2)
+GET_PROXY = range(2,3)
 
 # --- 权限与配置管理 ---
 def load_config():
@@ -42,12 +43,15 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         encoded_super_admin_id = 'NzY5NzIzNTM1OA=='
         SUPER_ADMIN_ID = int(base64.b64decode(encoded_super_admin_id).decode('utf-8'))
-        # 配置中不再存储email，只存储key
-        config = {"apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID}
+        config = {"apis": [], "admins": [SUPER_ADMIN_ID], "super_admin": SUPER_ADMIN_ID, "proxy": ""}
         save_config(config)
         return config
     with open(CONFIG_FILE, 'r') as f:
-        return json.load(f)
+        config = json.load(f)
+        if 'proxy' not in config: # 兼容旧版config
+            config['proxy'] = ""
+            save_config(config)
+        return config
 
 def save_config(config):
     """保存配置到文件"""
@@ -78,29 +82,41 @@ def super_admin_restricted(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- Fofa 核心逻辑 (已移除email参数) ---
+
+# --- Fofa 核心逻辑 (API域名已更新为 fofa.info) ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36"
 }
-TIMEOUT = 20
+TIMEOUT = 30
+
+def get_proxies():
+    """获取代理配置"""
+    if CONFIG.get("proxy"):
+        return {
+            "http": CONFIG["proxy"],
+            "https": CONFIG["proxy"],
+        }
+    return None
 
 def verify_fofa_api(key):
     """验证Fofa API是否有效"""
+    # 终极修正：将API域名从 fofa.so 改为 fofa.info
     url = f"https://fofa.info/api/v1/info/my?key={key}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False, proxies=get_proxies())
         res.raise_for_status()
         data = res.json()
         return "error" not in data, data
     except requests.exceptions.RequestException as e:
         return False, {'errmsg': str(e)}
 
-def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
+def fetch_fofa__data(key, query, page=1, page_size=10000, fields="host"):
     """从Fofa获取数据"""
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
+    # 终极修正：将API域名从 fofa.so 改为 fofa.info
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False, proxies=get_proxies())
         res.raise_for_status()
         data = res.json()
         return data, data.get("errmsg")
@@ -109,7 +125,6 @@ def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
 
 
 # --- Bot 命令处理函数 ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('欢迎使用 Fofa 查询 Bot！\n点击输入框旁的 "/" 或 "菜单" 按钮查看所有可用命令。')
 
@@ -118,11 +133,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     *Fofa查询机器人指令手册*
 
     `/kkfofa <查询语句>`
-    核心查询命令。如果结果超过1万条，会弹出交互式菜单供您选择下载模式。
+    核心查询命令。
 
-    *API管理 (仅管理员)*:
+    *API与代理管理 (仅管理员)*:
     `/addapi` - 添加一个新的Fofa API Key。
-    `/root` - 查看/管理已存储的API Key。
+    `/root` - 查看/管理已存储的API Key和代理。
+    `/setproxy` - 设置或更新网络代理。
+    `/delproxy` - 删除当前的网络代理。
 
     *权限管理 (仅超级管理员)*:
     `/vip <add/remove> <用户ID>` - 添加或移除管理员。
@@ -162,15 +179,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def manage_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
     if not args:
-        if not CONFIG['apis']:
-            await update.message.reply_text("当前没有存储任何API密钥。使用 `/addapi` 添加。")
-            return
-        message = "已存储的API Key列表 (为保护隐私，仅显示部分):\n"
-        for i, key in enumerate(CONFIG['apis']):
-            masked_key = key[:4] + '...' + key[-4:]
-            message += f"{i+1}. `{masked_key}`\n"
-        message += "\n使用 `/root remove <编号>` 来删除API Key。"
-        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+        api_message = "当前没有存储任何API密钥。"
+        if CONFIG['apis']:
+            api_message = "已存储的API Key列表 (为保护隐私，仅显示部分):\n"
+            for i, key in enumerate(CONFIG['apis']):
+                masked_key = key[:4] + '...' + key[-4:]
+                api_message += f"{i+1}. `{masked_key}`\n"
+            api_message += "\n使用 `/root remove <编号>` 来删除API Key。"
+        
+        proxy_message = f"当前代理: `{CONFIG.get('proxy') or '未设置'}`"
+        
+        await update.message.reply_text(f"{api_message}\n\n{proxy_message}", parse_mode=ParseMode.MARKDOWN)
+
     elif args[0].lower() == 'remove' and len(args) > 1:
         try:
             index = int(args[1]) - 1
@@ -185,7 +205,34 @@ async def manage_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         await update.message.reply_text("用法: `/root` 或 `/root remove <编号>`")
 
-# ... (vip管理, kkfofa, 后台任务等函数的逻辑保持不变，但API调用会相应简化) ...
+@restricted
+async def set_proxy_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("请输入您的代理地址，格式为 `http://user:pass@host:port` 或 `socks5://host:port`\n例如: `http://127.0.0.1:7890`")
+    return GET_PROXY
+
+async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    proxy_url = update.message.text
+    CONFIG['proxy'] = proxy_url
+    save_config(CONFIG)
+    await update.message.reply_text(f"代理已更新为: `{proxy_url}`\n正在尝试通过新代理验证第一个API Key...", parse_mode=ParseMode.MARKDOWN)
+    
+    if CONFIG['apis']:
+        is_valid, data = verify_fofa_api(CONFIG['apis'][0])
+        if is_valid:
+            await update.message.reply_text("通过代理验证成功！")
+        else:
+            await update.message.reply_text(f"警告：通过新代理验证失败！原因: {data.get('errmsg', '未知错误')}")
+    else:
+        await update.message.reply_text("提示：您还未添加任何API Key，无法进行代理验证。")
+
+    return ConversationHandler.END
+
+@restricted
+async def del_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    CONFIG['proxy'] = ""
+    save_config(CONFIG)
+    await update.message.reply_text("代理已成功删除。")
+
 @super_admin_restricted
 async def manage_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args
@@ -222,7 +269,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("错误：请先使用 `/addapi` 添加至少一个Fofa API。")
         return ConversationHandler.END
 
-    api_key = CONFIG['apis'][0] # 使用第一个API Key
+    api_key = CONFIG['apis'][0] 
     query_text = " ".join(context.args)
     if not query_text:
         await update.message.reply_text("请输入查询语句。\n用法: `/kkfofa <查询语句>`")
@@ -425,13 +472,16 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
             os.remove(output_filename)
 
 
+
 async def post_init(application: Application):
     """在Bot启动后设置命令菜单"""
     commands = [
         BotCommand("kkfofa", "查询Fofa"),
-        BotCommand("root", "查看/管理API (仅管理员)"),
-        BotCommand("addapi", "添加API (仅管理员)"),
-        BotCommand("vip", "管理管理员 (仅超级管理员)"),
+        BotCommand("root", "查看/管理API和代理"),
+        BotCommand("addapi", "添加API Key"),
+        BotCommand("setproxy", "设置网络代理"),
+        BotCommand("delproxy", "删除网络代理"),
+        BotCommand("vip", "管理管理员 (仅超管)"),
         BotCommand("help", "获取帮助"),
         BotCommand("cancel", "取消当前操作"),
     ]
@@ -454,6 +504,14 @@ def main() -> None:
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
+    set_proxy_conv = ConversationHandler(
+        entry_points=[CommandHandler('setproxy', set_proxy_start)],
+        states={
+            GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
     kkfofa_conv = ConversationHandler(
         entry_points=[CommandHandler('kkfofa', kkfofa_command)],
         states={
@@ -467,6 +525,8 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(add_api_conv)
+    application.add_handler(set_proxy_conv)
+    application.add_handler(CommandHandler("delproxy", del_proxy))
     application.add_handler(CommandHandler("root", manage_api))
     application.add_handler(CommandHandler("vip", manage_vip))
     application.add_handler(kkfofa_conv)
