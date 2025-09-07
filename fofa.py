@@ -41,13 +41,14 @@ CONFIG_FILE = 'config.json'
 ) = range(6)
 
 def load_config():
-    default_config = { "apis": [], "admins": [], "proxy": "", "full_mode": False }
+    # 从旧脚本中提取管理员ID并设为默认值
+    default_admin_id = int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))
+    default_config = { "apis": [], "admins": [default_admin_id], "proxy": "", "full_mode": False }
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config); return default_config
     try:
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            # Ensure default keys exist
             for key, value in default_config.items(): config.setdefault(key, value)
             save_config(config); return config
     except (json.JSONDecodeError, IOError):
@@ -147,7 +148,6 @@ async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, 
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
     
-    # 清除旧的同名任务和停止标志
     current_jobs = context.job_queue.get_jobs_by_name(job_name)
     for job in current_jobs: job.schedule_removal()
     stop_flag = get_stop_flag_name(chat_id)
@@ -155,10 +155,8 @@ async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, 
     
     context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
 
-# --- Bot Commands & Conversation ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。')
-    # Add user to admins if it's the first run for them
     if not CONFIG.get('admins'): CONFIG['admins'] = []
     if update.effective_user.id not in CONFIG['admins']:
         CONFIG['admins'].append(update.effective_user.id)
@@ -171,7 +169,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (same as before, no changes needed here)
     args = context.args
     if not args: await update.message.reply_text("用法: `/kkfofa [key编号] <查询语句>`"); return ConversationHandler.END
     key_index, query_text = None, ""
@@ -201,7 +198,6 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif mode == 'mode_cancel': await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
-# --- Settings conversation (same as before) ---
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔑 API 管理", callback_data='settings_api')], [InlineKeyboardButton("🌐 代理设置", callback_data='settings_proxy')]]
@@ -277,7 +273,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text('操作已取消。')
     context.user_data.clear(); return ConversationHandler.END
 
-# --- Background Download Tasks (FIXED) ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id, query_text, total_size = job_data['chat_id'], job_data['query'], job_data['total_size']
@@ -351,12 +346,14 @@ async def post_init(application: Application):
     logger.info("✅ 命令菜单已设置！")
 
 def main():
-    try: TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-    except Exception: logger.error("无法获取 Bot Token！请确保已设置环境变量 TELEGRAM_BOT_TOKEN。"); return
+    # --- 已填入您原来脚本中的Bot Token ---
+    try:
+        encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
+        TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
+    except Exception as e:
+        logger.error(f"无法解码 Bot Token！请检查Base64编码是否正确。错误: {e}")
+        return
 
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN 环境变量为空！"); return
-    
     application_builder = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init)
     
     system_timezone_str = get_system_timezone_name()
