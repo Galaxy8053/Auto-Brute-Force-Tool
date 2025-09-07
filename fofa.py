@@ -31,7 +31,16 @@ logger = logging.getLogger(__name__)
 
 # --- 全局变量和常量 ---
 CONFIG_FILE = 'config.json'
-GET_KEY, ASK_DATE_RANGE, GET_PROXY, REMOVE_API_PROMPT = range(4)
+# --- 统一的状态定义 ---
+(
+    STATE_KKFOFA_MODE,
+    STATE_KKFOFA_DATE,
+    STATE_SETTINGS_MAIN,
+    STATE_SETTINGS_ACTION,
+    STATE_GET_KEY,
+    STATE_GET_PROXY,
+    STATE_REMOVE_API,
+) = range(7)
 
 # --- 权限与配置管理 ---
 def load_config():
@@ -39,9 +48,7 @@ def load_config():
     default_config = {
         "apis": [],
         "admins": [int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))],
-        "super_admin": int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8')),
         "proxy": "",
-        "dedup_mode": "exact",
         "full_mode": False
     }
     if not os.path.exists(CONFIG_FILE):
@@ -76,31 +83,27 @@ def restricted(func):
                 await update.callback_query.answer(message, show_alert=True)
             else:
                 await update.message.reply_text(message)
-            return
+            return ConversationHandler.END # 结束会话
         return await func(update, context, *args, **kwargs)
     return wrapped
 
 # --- Fofa 核心逻辑 ---
 HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36" }
-TIMEOUT = 30
 
 def _make_request(url: str):
     proxies = {"http": CONFIG["proxy"], "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
     try:
-        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False, proxies=proxies)
+        res = requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies=proxies)
         res.raise_for_status()
         data = res.json()
-        if data.get("error"):
-            return None, data.get("errmsg", "Fofa返回未知错误。")
-        return data, None
+        return data, data.get("errmsg")
     except requests.exceptions.RequestException as e:
         return None, f"网络请求失败: {e}"
     except json.JSONDecodeError:
         return None, "服务器返回非JSON格式。"
 
 def verify_fofa_api(key):
-    url = f"https://fofa.info/api/v1/info/my?key={key}"
-    return _make_request(url)
+    return _make_request(f"https://fofa.info/api/v1/info/my?key={key}")
 
 def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
@@ -109,28 +112,33 @@ def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     return _make_request(url)
 
 async def get_best_api_key():
-    if not CONFIG['apis']: return None
+    if not CONFIG['apis']: return None, "没有配置API Key"
     tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
     
     for i, (data, error) in enumerate(results):
         if not error and data.get('is_vip'):
             key = CONFIG['apis'][i]
-            logger.info(f"✅ 找到VIP会员Key (用户: {data.get('username')})，将优先使用。")
-            return key
-            
-    logger.info("ℹ️ 未找到VIP会员Key，将使用配置中的第一个Key。")
-    return CONFIG['apis'][0]
+            logger.info(f"✅ 找到VIP Key (用户: {data.get('username')})，优先使用。")
+            return key, None
+    
+    if results and not results[0][1]:
+        logger.info("ℹ️ 未找到VIP Key，使用第一个有效Key。")
+        return CONFIG['apis'][0], None
 
-# --- Bot 命令处理函数 ---
+    return None, results[0][1] or "所有API Key均无效"
+
+
+# --- Bot 命令 & 对话流程 ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！\n\n👇 点击 **菜单** 或输入 `/` 查看所有命令。', parse_mode=ParseMode.MARKDOWN)
+    return ConversationHandler.END
 
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    api_key = await get_best_api_key()
-    if not api_key:
-        await update.message.reply_text("❌ 错误：请先在设置中添加 Fofa API Key。")
+    api_key, error = await get_best_api_key()
+    if error:
+        await update.message.reply_text(f"❌ 错误: {error}")
         return ConversationHandler.END
 
     query_text = " ".join(context.args)
@@ -138,8 +146,8 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("请输入查询语句，例如：`/kkfofa nezha`")
         return ConversationHandler.END
 
-    msg = await update.message.reply_text("🔄 正在查询数据总数，请稍候...")
-    data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, page_size=1)
+    msg = await update.message.reply_text("🔄 正在查询数据总数...")
+    data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, 1, 1)
 
     if error:
         await msg.edit_text(f"❌ 查询出错: {error}")
@@ -150,75 +158,65 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("🤷‍♀️ 未找到相关结果。")
         return ConversationHandler.END
     
-    context.user_data.update({'query': query_text, 'total_size': total_size, 'api_key': api_key})
+    context.user_data.update({'query': query_text, 'total_size': total_size, 'api_key': api_key, 'chat_id': update.effective_chat.id})
 
     if total_size <= 10000:
-        await msg.edit_text(f"✅ 查询到 {total_size} 条结果，符合单次额度，正在为您下载...")
-        job_data = {'base_query': query_text, 'total_size': total_size, 'chat_id': update.effective_chat.id, 'api_key': api_key}
-        context.application.job_queue.run_once(run_full_download_query, 0, data=job_data)
+        await msg.edit_text(f"✅ 查询到 {total_size} 条结果，正在下载...")
+        context.application.job_queue.run_once(run_full_download_query, 0, data=context.user_data)
         return ConversationHandler.END
     else:
         keyboard = [
-            [InlineKeyboardButton("🗓️ 按天下载", callback_data='mode_daily')],
-            [InlineKeyboardButton("💎 全部下载", callback_data='mode_full')],
+            [InlineKeyboardButton("🗓️ 按天下载", callback_data='mode_daily'), InlineKeyboardButton("💎 全部下载", callback_data='mode_full')],
             [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]
         ]
-        await msg.edit_text(f"📊 查询到 {total_size} 条结果，已超出单次额度(10000条)。\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard))
-        return 1
+        await msg.edit_text(f"📊 查询到 {total_size} 条结果，已超出单次额度。\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return STATE_KKFOFA_MODE
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     mode = query.data
-    user_data = context.user_data
     
     if mode == 'mode_daily':
-        await query.edit_message_text(text="您选择了按天下载模式。\n🗓️ 请输入起止日期 (格式: `YYYY-MM-DD to YYYY-MM-DD`)", parse_mode=ParseMode.MARKDOWN)
-        return ASK_DATE_RANGE
+        await query.edit_message_text("🗓️ 请输入起止日期 (格式: `YYYY-MM-DD to YYYY-MM-DD`)", parse_mode=ParseMode.MARKDOWN)
+        return STATE_KKFOFA_DATE
     elif mode == 'mode_full':
-        await query.edit_message_text(text=f"⏳ 已开始全量下载任务 ({user_data['total_size']}条)，请注意F点消耗。")
-        job_data = {'base_query': user_data['query'], 'total_size': user_data['total_size'], 'chat_id': query.message.chat_id, 'api_key': user_data['api_key']}
-        context.application.job_queue.run_once(run_full_download_query, 0, data=job_data)
+        await query.edit_message_text(f"⏳ 已开始全量下载任务 ({context.user_data['total_size']}条)...")
+        context.application.job_queue.run_once(run_full_download_query, 0, data=context.user_data)
     elif mode == 'mode_cancel':
-        await query.edit_message_text(text="操作已取消。")
-        user_data.clear()
-        
+        await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
 async def get_date_range_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date_range_str = update.message.text
-    user_data = context.user_data
     try:
-        start_str, end_str = [s.strip() for s in date_range_str.lower().split("to")]
+        start_str, end_str = [s.strip() for s in update.message.text.lower().split("to")]
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
 
         if start_date > end_date:
-            await update.message.reply_text("❌ 错误：开始日期不能晚于结束日期，请重新输入。")
-            return ASK_DATE_RANGE
+            await update.message.reply_text("❌ 错误：开始日期不能晚于结束日期。")
+            return STATE_KKFOFA_DATE
 
-        await update.message.reply_text(f"✅ 日期范围确认！任务已在后台开始。", parse_mode=ParseMode.MARKDOWN)
-        job_data = {**user_data, 'base_query': user_data['query'], 'start_date': start_date, 'end_date': end_date, 'chat_id': update.effective_chat.id, 'api_key': user_data['api_key']}
-        context.application.job_queue.run_once(run_date_range_query, 0, data=job_data)
-        user_data.clear()
+        await update.message.reply_text(f"✅ 日期范围确认！任务已在后台开始。")
+        context.user_data.update({'start_date': start_date, 'end_date': end_date})
+        context.application.job_queue.run_once(run_date_range_query, 0, data=context.user_data)
         return ConversationHandler.END
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ 格式错误，请重新输入 (格式: `YYYY-MM-DD to YYYY-MM-DD`)\n或使用 /cancel 取消。", parse_mode=ParseMode.MARKDOWN)
-        return ASK_DATE_RANGE
+        await update.message.reply_text("❌ 格式错误，请重新输入或 /cancel 取消。")
+        return STATE_KKFOFA_DATE
 
-# --- 设置菜单 ---
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔑 API 管理", callback_data='settings_api')],
         [InlineKeyboardButton("🌐 代理设置", callback_data='settings_proxy')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    message_text = "⚙️ *设置菜单*\n\n请选择您要管理的项目:"
+    message_text = "⚙️ *设置菜单*"
     if update.callback_query:
-        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.callback_query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    return STATE_SETTINGS_MAIN
 
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -226,83 +224,77 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
     menu = query.data.split('_')[1]
 
     if menu == 'api':
-        await api_settings_menu(query)
-    elif menu == 'proxy':
-        proxy_message = f"当前代理: `{CONFIG.get('proxy') or '未设置'}`"
+        full_mode_text = "✅ 查询所有历史" if CONFIG.get("full_mode") else "⏳ 仅查近一年"
         keyboard = [
-            [InlineKeyboardButton("✏️ 设置/更新", callback_data='action_proxy_set')],
-            [InlineKeyboardButton("🗑️ 清除", callback_data='action_proxy_delete')],
-            [InlineKeyboardButton("🔙 返回", callback_data='settings_main')]
+            [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_toggle_full')],
+            [InlineKeyboardButton("➕ 添加", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除", callback_data='action_remove_api')],
+            [InlineKeyboardButton("🔙 返回", callback_data='action_back_main')]
         ]
-        await query.edit_message_text(f"🌐 *代理设置*\n\n{proxy_message}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-    elif menu == 'main':
-        await settings_command(update, context)
-
-async def api_settings_menu(query):
-    api_message = "当前没有存储任何API密钥。"
-    if CONFIG['apis']:
-        api_message = "已存储的API Key (仅显示部分):\n" + "\n".join(
-            [f"{i+1}. `{key[:4]}...{key[-4:]}`" for i, key in enumerate(CONFIG['apis'])]
-        )
-    
-    full_mode_status = CONFIG.get("full_mode", False)
-    full_mode_text = "✅ 查询所有历史数据" if full_mode_status else "⏳ 仅查近一年 (默认)"
-    
-    keyboard = [
-        [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_api_toggle_full')],
-        [InlineKeyboardButton("➕ 添加新API", callback_data='action_api_add'), InlineKeyboardButton("➖ 删除API", callback_data='action_api_remove_prompt')],
-        [InlineKeyboardButton("🔙 返回主菜单", callback_data='settings_main')]
-    ]
-    await query.edit_message_text(f"🔑 *API 管理*\n\n{api_message}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("🔑 *API 管理*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        return STATE_SETTINGS_ACTION
+    elif menu == 'proxy':
+        keyboard = [
+            [InlineKeyboardButton("✏️ 设置/更新", callback_data='action_set_proxy')],
+            [InlineKeyboardButton("🗑️ 清除", callback_data='action_delete_proxy')],
+            [InlineKeyboardButton("🔙 返回", callback_data='action_back_main')]
+        ]
+        await query.edit_message_text(f"🌐 *代理设置*\n当前: `{CONFIG.get('proxy') or '未设置'}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        return STATE_SETTINGS_ACTION
 
 async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     action = query.data.split('_', 1)[1]
 
-    if action == 'api_add':
-        await query.edit_message_text("好的，请直接发送您的 Fofa API Key。")
-        return GET_KEY
-    if action == 'api_remove_prompt':
-        await query.edit_message_text("请输入您要删除的API Key的编号。")
-        return REMOVE_API_PROMPT
-    if action == 'api_toggle_full':
+    if action == 'back_main':
+        return await settings_command(update, context)
+    elif action == 'toggle_full':
         CONFIG["full_mode"] = not CONFIG.get("full_mode", False)
         save_config(CONFIG)
-        await api_settings_menu(query)
-    elif action == 'proxy_set':
-        await query.edit_message_text("请输入代理地址，例如 `http://127.0.0.1:7890`")
-        return GET_PROXY
-    elif action == 'proxy_delete':
+        return await settings_callback_handler(update, context) # Reload API menu
+    elif action == 'add_api':
+        await query.edit_message_text("请直接发送您的 Fofa API Key。")
+        return STATE_GET_KEY
+    elif action == 'remove_api':
+        if not CONFIG['apis']:
+            await query.edit_message_text("当前没有可删除的API Key。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data='settings_api')]]))
+            return STATE_SETTINGS_MAIN
+        msg = "请回复要删除的API Key编号:\n" + "\n".join([f"{i+1}. `{key[:4]}...`" for i, key in enumerate(CONFIG['apis'])])
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+        return STATE_REMOVE_API
+    elif action == 'set_proxy':
+        await query.edit_message_text("请输入代理地址, 或 /cancel 取消。")
+        return STATE_GET_PROXY
+    elif action == 'delete_proxy':
         CONFIG['proxy'] = ""
         save_config(CONFIG)
-        await query.edit_message_text("✅ 代理已成功清除。")
-        await asyncio.sleep(1.5)
-        await settings_command(update, context)
+        await query.edit_message_text("✅ 代理已清除。")
+        await asyncio.sleep(1)
+        return await settings_command(update, context)
 
 async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = update.message.text
-    msg = await update.message.reply_text("正在验证API密钥...")
+    msg = await update.message.reply_text("正在验证...")
     data, error = await asyncio.to_thread(verify_fofa_api, key)
     if not error:
         if key not in CONFIG['apis']:
             CONFIG['apis'].append(key)
             save_config(CONFIG)
-            await msg.edit_text(f"✅ 成功添加！\n你好, {data.get('username', 'user')}!")
+            await msg.edit_text(f"✅ 添加成功！你好, {data.get('username', 'user')}!")
         else:
-            await msg.edit_text(f"ℹ️ 该Key已存在。\n你好, {data.get('username', 'user')}!")
+            await msg.edit_text(f"ℹ️ 该Key已存在。")
     else:
         await msg.edit_text(f"❌ 验证失败: {error}")
     
-    await asyncio.sleep(2)
+    await asyncio.sleep(1.5)
     await settings_command(update, context)
     return ConversationHandler.END
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CONFIG['proxy'] = update.message.text
     save_config(CONFIG)
-    await update.message.reply_text(f"✅ 代理已更新为: `{CONFIG['proxy']}`", parse_mode=ParseMode.MARKDOWN)
-    await asyncio.sleep(1.5)
+    await update.message.reply_text(f"✅ 代理已更新。")
+    await asyncio.sleep(1)
     await settings_command(update, context)
     return ConversationHandler.END
 
@@ -312,18 +304,21 @@ async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 0 <= index < len(CONFIG['apis']):
             CONFIG['apis'].pop(index)
             save_config(CONFIG)
-            await update.message.reply_text(f"✅ 已成功删除指定Key。")
+            await update.message.reply_text(f"✅ 已成功删除。")
         else:
             await update.message.reply_text("❌ 无效的编号。")
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ 请输入列表中的有效数字编号。")
+        await update.message.reply_text("❌ 请输入数字编号。")
 
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1)
     await settings_command(update, context)
     return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text('操作已取消。')
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.edit_message_text('操作已取消。')
+    else:
+        await update.message.reply_text('操作已取消。')
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -331,128 +326,102 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id, query_text, total_size, api_key = job_data['chat_id'], job_data['base_query'], job_data['total_size'], job_data['api_key']
-    output_filename = f"fofa_full_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+    output_filename = f"fofa_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
     unique_results = set()
-    msg = await context.bot.send_message(chat_id, "⏳ 开始全量下载任务...")
+    msg = await context.bot.send_message(chat_id, "⏳ 开始全量下载...")
     
-    page_size = 10000
-    pages_to_fetch = (total_size + page_size - 1) // page_size
+    pages_to_fetch = (total_size + 9999) // 10000
     for page in range(1, pages_to_fetch + 1):
-        try:
-            await msg.edit_text(f"下载进度: {page}/{pages_to_fetch}...")
-        except Exception:
-            pass
-        data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, page=page, page_size=page_size)
+        try: await msg.edit_text(f"下载进度: {page}/{pages_to_fetch}...")
+        except: pass
+        data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, page)
         if error:
-            await context.bot.send_message(chat_id, f"❌ 下载第 {page} 页时出错: {error}")
+            await context.bot.send_message(chat_id, f"❌ 第 {page} 页下载出错: {error}")
             continue
-        for res in data.get('results', []):
-            unique_results.add(res)
+        unique_results.update(data.get('results', []))
             
-    with open(output_filename, 'w', encoding='utf-8') as f:
-        f.write("\n".join(unique_results))
+    with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(unique_results))
 
-    await msg.edit_text(f"✅ 下载完成！去重后共 {len(unique_results)} 条。\n正在发送文件...")
+    await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。\n正在发送文件...")
     if os.path.getsize(output_filename) > 0:
-        with open(output_filename, 'rb') as doc:
-            await context.bot.send_document(chat_id, document=doc)
+        with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
     else:
-        await context.bot.send_message(chat_id, "🤷‍♀️ 任务完成，但未发现任何数据。")
+        await context.bot.send_message(chat_id, "🤷‍♀️ 任务完成，但文件为空。")
     os.remove(output_filename)
 
 async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id, base_query, start_date, end_date, api_key = job_data['chat_id'], job_data['base_query'], job_data['start_date'], job_data['end_date'], job_data['api_key']
-    output_filename = f"fofa_daily_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+    output_filename = f"fofa_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
     unique_results = set()
-    total_days = (end_date - start_date).days + 1
-    msg = await context.bot.send_message(chat_id, "⏳ 开始按天下载任务...")
+    msg = await context.bot.send_message(chat_id, "⏳ 开始按天下载...")
 
-    current_date = start_date
-    for day_num in range(total_days):
-        try:
-            await msg.edit_text(f"下载进度: {day_num + 1}/{total_days} ({current_date.strftime('%Y-%m-%d')})...")
-        except Exception:
-            pass
+    total_days = (end_date - start_date).days + 1
+    for day_num, current_date in enumerate((start_date + timedelta(n) for n in range(total_days))):
+        try: await msg.edit_text(f"下载进度: {day_num + 1}/{total_days} ({current_date.strftime('%Y-%m-%d')})...")
+        except: pass
         
         after_str = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
-        
+        query_for_day = f'({base_query}) && after="{after_str}"'
         page = 1
         while True:
-            query_for_day = f'({base_query}) && after="{after_str}"'
-            
-            data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_for_day, page=page)
+            data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_for_day, page)
             if error:
-                await context.bot.send_message(chat_id, f"❌ 下载 `{current_date.strftime('%Y-%m-%d')}` 数据时出错: {error}")
+                await context.bot.send_message(chat_id, f"❌ `{current_date.strftime('%Y-%m-%d')}` 下载出错: {error}")
                 break
-
             results = data.get('results', [])
             if not results: break
-
-            for res in results:
-                unique_results.add(res)
-            
-            if len(results) < 10000:
-                break
+            unique_results.update(results)
+            if len(results) < 10000: break
             page += 1
-        current_date += timedelta(days=1)
-        
-    with open(output_filename, 'w', encoding='utf-8') as f:
-        f.write("\n".join(unique_results))
-        
-    await msg.edit_text(f"✅ 下载完成！共找到 {len(unique_results)} 条数据(未精确按天过滤)。\n正在发送文件...")
+            
+    with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(unique_results))
+    await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条(未精确过滤)。\n正在发送文件...")
     if os.path.getsize(output_filename) > 0:
-        with open(output_filename, 'rb') as doc:
-            await context.bot.send_document(chat_id, document=doc)
+        with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
     else:
-        await context.bot.send_message(chat_id, "🤷‍♀️ 任务完成，但未发现任何数据。")
+        await context.bot.send_message(chat_id, "🤷‍♀️ 任务完成，但文件为空。")
     os.remove(output_filename)
 
 # --- Bot 初始化 ---
 async def post_init(application: Application):
-    commands = [
+    await application.bot.set_my_commands([
         BotCommand("kkfofa", "🔍 资产搜索"),
         BotCommand("settings", "⚙️ 设置"),
         BotCommand("cancel", "❌ 取消操作"),
-    ]
-    await application.bot.set_my_commands(commands)
-    logger.info("✅ 已成功设置命令菜单！")
+    ])
+    logger.info("✅ 命令菜单已设置！")
 
 def main():
     try:
         TELEGRAM_BOT_TOKEN = base64.b64decode('ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==').decode('utf-8')
     except Exception:
-        logger.error("无法解码 Telegram Bot Token，请检查 Base64 编码。")
+        logger.error("无法解码 Bot Token，请检查 Base64 编码。")
         return
         
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    # --- FINAL FIX: Correctly define the entry_points for ConversationHandlers ---
-    settings_conv = ConversationHandler(
-        entry_points=[CommandHandler('settings', settings_command), CallbackQueryHandler(settings_callback_handler, pattern='^settings_')],
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("kkfofa", kkfofa_command),
+            CommandHandler("settings", settings_command),
+        ],
         states={
-            0: [CallbackQueryHandler(settings_action_handler, pattern='^action_')],
-            GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
-            GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
-            REMOVE_API_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)],
+            STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern="^mode_")],
+            STATE_KKFOFA_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date_range_from_message)],
+            STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern="^settings_")],
+            STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern="^action_")],
+            STATE_GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
+            STATE_GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
+            STATE_REMOVE_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-
-    kkfofa_conv = ConversationHandler(
-        entry_points=[CommandHandler('kkfofa', kkfofa_command)],
-        states={
-            1: [CallbackQueryHandler(query_mode_callback, pattern='^mode_')],
-            ASK_DATE_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date_range_from_message)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(kkfofa_conv)
-    application.add_handler(settings_conv)
+    application.add_handler(conv_handler)
 
-    logger.info("🚀 机器人已启动，开始轮询...")
+    logger.info("🚀 机器人已启动...")
     application.run_polling()
 
 if __name__ == '__main__':
