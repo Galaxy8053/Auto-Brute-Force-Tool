@@ -19,12 +19,10 @@ from telegram.ext import (
 )
 
 # --- 禁用SSL证书验证警告 ---
-# --- Disable SSL certificate verification warnings ---
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 基础配置 ---
-# --- Basic Configuration ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -32,10 +30,7 @@ logging.getLogger("telegram.ext").addFilter(lambda record: "PTBUserWarning" not 
 logger = logging.getLogger(__name__)
 
 # --- 全局变量和常量 ---
-# --- Global Variables and Constants ---
 CONFIG_FILE = 'config.json'
-# --- 统一的状态定义 ---
-# --- Unified State Definitions ---
 (
     STATE_KKFOFA_MODE,
     STATE_KKFOFA_DATE,
@@ -47,13 +42,11 @@ CONFIG_FILE = 'config.json'
 ) = range(7)
 
 # --- 权限与配置管理 ---
-# --- Permissions and Configuration Management ---
 def load_config():
     """加载配置文件，如果不存在则创建"""
-    """Load configuration file, create if it does not exist"""
     default_config = {
         "apis": [],
-        "admins": [int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))], # Default admin ID
+        "admins": [int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))],
         "proxy": "",
         "full_mode": False
     }
@@ -63,30 +56,23 @@ def load_config():
     try:
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            # Ensure all keys exist, add if missing
             for key, value in default_config.items():
                 config.setdefault(key, value)
             save_config(config)
             return config
     except (json.JSONDecodeError, IOError):
         logger.error("配置文件损坏或无法读取，将使用默认配置重建。")
-        logger.error("Configuration file is corrupt or unreadable, rebuilding with default config.")
         save_config(default_config)
         return default_config
 
 def save_config(config):
-    """保存配置到文件"""
-    """Save configuration to file"""
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=4)
 
 CONFIG = load_config()
 
 # --- 装饰器 ---
-# --- Decorators ---
 def restricted(func):
-    """装饰器：限制只有管理员才能访问"""
-    """Decorator: Restrict access to administrators only"""
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
@@ -96,17 +82,14 @@ def restricted(func):
                 await update.callback_query.answer(message, show_alert=True)
             else:
                 await update.message.reply_text(message)
-            return ConversationHandler.END # 结束会话 | End the conversation
+            return ConversationHandler.END
         return await func(update, context, *args, **kwargs)
     return wrapped
 
 # --- Fofa 核心逻辑 ---
-# --- Fofa Core Logic ---
 HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36" }
 
 def _make_request(url: str):
-    """发起网络请求的辅助函数"""
-    """Helper function to make network requests"""
     proxies = {"http": CONFIG["proxy"], "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
     try:
         res = requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies=proxies)
@@ -119,21 +102,15 @@ def _make_request(url: str):
         return None, "服务器返回非JSON格式。"
 
 def verify_fofa_api(key):
-    """验证 Fofa API Key 的有效性"""
-    """Verify the validity of a Fofa API Key"""
     return _make_request(f"https://fofa.info/api/v1/info/my?key={key}")
 
 def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
-    """从 Fofa 获取数据"""
-    """Fetch data from Fofa"""
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
     full_param = "&full=true" if CONFIG.get("full_mode", False) else ""
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return _make_request(url)
 
 async def get_best_api_key():
-    """智能选择最佳 API Key"""
-    """Intelligently select the best API Key"""
     if not CONFIG['apis']: return None, "没有配置API Key"
     tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
@@ -150,19 +127,29 @@ async def get_best_api_key():
 
     return None, results[0][1] or "所有API Key均无效"
 
+# --- 任务管理辅助函数 ---
+def _start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
+    """辅助函数：停止现有任务并启动新任务"""
+    chat_id = job_data['chat_id']
+    job_name = f"download_job_{chat_id}"
+    
+    # 停止此聊天已有的任何下载任务
+    current_jobs = context.application.job_queue.get_jobs_by_name(job_name)
+    for job in current_jobs:
+        job.schedule_removal()
+        logger.info(f"已移除聊天 {chat_id} 的旧任务: {job_name}")
+
+    # 启动新任务
+    context.application.job_queue.run_once(callback_func, 0, data=job_data, name=job_name)
+    logger.info(f"已为聊天 {chat_id} 安排新任务: {job_name}")
 
 # --- Bot 命令 & 对话流程 ---
-# --- Bot Commands & Conversation Flow ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /start 命令"""
-    """Handle the /start command"""
     await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！\n\n👇 点击 **菜单** 或输入 `/` 查看所有命令。', parse_mode=ParseMode.MARKDOWN)
     return ConversationHandler.END
 
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /kkfofa 命令，开始查询流程"""
-    """Handle the /kkfofa command to start the query process"""
     api_key, error = await get_best_api_key()
     if error:
         await update.message.reply_text(f"❌ 错误: {error}")
@@ -189,7 +176,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if total_size <= 10000:
         await msg.edit_text(f"✅ 查询到 {total_size} 条结果，正在下载...")
-        context.application.job_queue.run_once(run_full_download_query, 0, data=context.user_data)
+        _start_download_job(context, run_full_download_query, context.user_data)
         return ConversationHandler.END
     else:
         keyboard = [
@@ -200,8 +187,6 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_KKFOFA_MODE
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理下载模式选择按钮"""
-    """Handle download mode selection buttons"""
     query = update.callback_query
     await query.answer()
     mode = query.data
@@ -211,14 +196,12 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return STATE_KKFOFA_DATE
     elif mode == 'mode_full':
         await query.edit_message_text(f"⏳ 已开始全量下载任务 ({context.user_data['total_size']}条)...")
-        context.application.job_queue.run_once(run_full_download_query, 0, data=context.user_data)
+        _start_download_job(context, run_full_download_query, context.user_data)
     elif mode == 'mode_cancel':
         await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
 async def get_date_range_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """获取并处理用户输入的日期范围"""
-    """Get and process the date range input by the user"""
     try:
         start_str, end_str = [s.strip() for s in update.message.text.lower().split("to")]
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
@@ -230,7 +213,7 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
 
         await update.message.reply_text(f"✅ 日期范围确认！任务已在后台开始。")
         context.user_data.update({'start_date': start_date, 'end_date': end_date})
-        context.application.job_queue.run_once(run_date_range_query, 0, data=context.user_data.copy())
+        _start_download_job(context, run_date_range_query, context.user_data.copy())
         return ConversationHandler.END
     except (ValueError, IndexError):
         await update.message.reply_text("❌ 格式错误，请重新输入或 /cancel 取消。")
@@ -238,8 +221,6 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
 
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /settings 命令，显示主设置菜单"""
-    """Handle the /settings command, display the main settings menu"""
     keyboard = [
         [InlineKeyboardButton("🔑 API 管理", callback_data='settings_api')],
         [InlineKeyboardButton("🌐 代理设置", callback_data='settings_proxy')]
@@ -252,8 +233,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_SETTINGS_MAIN
 
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理主设置菜单的按钮点击"""
-    """Handle button clicks in the main settings menu"""
     query = update.callback_query
     await query.answer()
     menu = query.data.split('_')[1]
@@ -277,8 +256,6 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
         return STATE_SETTINGS_ACTION
 
 async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理二级设置菜单中的具体操作"""
-    """Handle specific actions in the sub-settings menus"""
     query = update.callback_query
     await query.answer()
     action = query.data.split('_', 1)[1]
@@ -311,8 +288,6 @@ async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_
         return await settings_command(update, context)
 
 async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """获取并保存用户发送的 API Key"""
-    """Get and save the API Key sent by the user"""
     key = update.message.text
     msg = await update.message.reply_text("正在验证...")
     data, error = await asyncio.to_thread(verify_fofa_api, key)
@@ -331,8 +306,6 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """获取并保存代理地址"""
-    """Get and save the proxy address"""
     CONFIG['proxy'] = update.message.text
     save_config(CONFIG)
     await update.message.reply_text(f"✅ 代理已更新。")
@@ -341,8 +314,6 @@ async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """根据用户输入的编号移除 API Key"""
-    """Remove an API Key based on the number input by the user"""
     try:
         index = int(update.message.text) - 1
         if 0 <= index < len(CONFIG['apis']):
@@ -358,21 +329,46 @@ async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await settings_command(update, context)
     return ConversationHandler.END
 
+async def stop_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /stop 命令，强制停止后台任务"""
+    chat_id = update.effective_chat.id
+    job_name = f"download_job_{chat_id}"
+    current_jobs = context.application.job_queue.get_jobs_by_name(job_name)
+
+    if not current_jobs:
+        await update.message.reply_text("目前没有正在运行的下载任务。")
+        return
+
+    for job in current_jobs:
+        job.schedule_removal()
+
+    await update.message.reply_text("✅ 已成功发送停止指令到后台任务。")
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """取消当前操作"""
-    """Cancel the current operation"""
+    """取消当前对话，并尝试停止后台任务"""
+    chat_id = update.effective_chat.id
+    job_name = f"download_job_{chat_id}"
+    current_jobs = context.application.job_queue.get_jobs_by_name(job_name)
+    job_stopped = False
+
+    if current_jobs:
+        for job in current_jobs:
+            job.schedule_removal()
+        job_stopped = True
+
     if update.callback_query:
         await update.callback_query.edit_message_text('操作已取消。')
     else:
         await update.message.reply_text('操作已取消。')
+    
+    if job_stopped:
+        await context.bot.send_message(chat_id, "后台下载任务也已停止。")
+
     context.user_data.clear()
     return ConversationHandler.END
 
 # --- 后台任务 ---
-# --- Background Tasks ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
-    """执行全量下载任务"""
-    """Execute the full download task"""
     job_data = context.job.data
     chat_id, query_text, total_size, api_key = job_data['chat_id'], job_data['query'], job_data['total_size'], job_data['api_key']
     output_filename = f"fofa_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
@@ -399,8 +395,6 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     os.remove(output_filename)
 
 async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
-    """执行按天下载任务"""
-    """Execute the daily download task"""
     job_data = context.job.data
     chat_id, base_query, start_date, end_date, api_key = job_data['chat_id'], job_data['query'], job_data['start_date'], job_data['end_date'], job_data['api_key']
     
@@ -413,8 +407,6 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
         try: await msg.edit_text(f"下载进度: {day_num + 1}/{total_days} ({current_date.strftime('%Y-%m-%d')})...")
         except: pass
         
-        # 根据Fofa客服说明，查询当天数据用 after:前一天
-        # According to Fofa support, to query for a specific day, use after: a day before
         after_str = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
         query_for_day = f'({base_query}) && after="{after_str}"'
         page = 1
@@ -438,23 +430,17 @@ async def run_date_range_query(context: ContextTypes.DEFAULT_TYPE):
     os.remove(output_filename)
 
 # --- Bot 初始化 ---
-# --- Bot Initialization ---
 async def post_init(application: Application):
-    """在Bot启动后执行的操作"""
-    """Actions to perform after the bot starts"""
     await application.bot.set_my_commands([
         BotCommand("kkfofa", "🔍 资产搜索"),
         BotCommand("settings", "⚙️ 设置"),
-        BotCommand("cancel", "❌ 取消操作"),
+        BotCommand("stop", "🛑 停止后台任务"),
+        BotCommand("cancel", "❌ 取消当前操作"),
     ])
     logger.info("✅ 命令菜单已设置！")
 
 def main():
-    """主函数，启动Bot"""
-    """Main function to start the bot"""
     try:
-        # 建议将Token存储在环境变量中，而不是硬编码
-        # It's recommended to store the Token in environment variables instead of hardcoding
         TELEGRAM_BOT_TOKEN = base64.b64decode('ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==').decode('utf-8')
     except Exception:
         logger.error("无法解码 Bot Token，请检查 Base64 编码。")
@@ -462,11 +448,8 @@ def main():
         
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    # 统一的对话处理器
-    # Unified conversation handler
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
             CommandHandler("kkfofa", kkfofa_command),
             CommandHandler("settings", settings_command),
         ],
@@ -482,6 +465,8 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop_task))
     application.add_handler(conv_handler)
 
     logger.info("🚀 机器人已启动...")
