@@ -26,7 +26,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-logging.getLogger("telegram.ext")。addFilter(lambda record: "PTBUserWarning" not in record.getMessage())
+logging.getLogger("telegram.ext").addFilter(lambda record: "PTBUserWarning" not in record.getMessage())
 logger = logging.getLogger(__name__)
 
 # --- 全局变量和常量 ---
