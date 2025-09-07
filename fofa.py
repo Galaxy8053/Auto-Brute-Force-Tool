@@ -20,13 +20,13 @@ from telegram.ext import (
 
 # --- 禁用SSL证书验证警告 ---
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions。InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 基础配置 ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-logging.getLogger("telegram.ext")。addFilter(lambda record: "PTBUserWarning" not in record.getMessage())
+logging.getLogger("telegram.ext").addFilter(lambda record: "PTBUserWarning" not in record.getMessage())
 logger = logging.getLogger(__name__)
 
 # --- 全局变量和常量 ---
@@ -43,7 +43,7 @@ CONFIG_FILE = 'config.json'
 
 # --- 权限与配置管理 ---
 def load_config():
-    default_config = { "apis": []， "admins": [int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))], "proxy": "", "full_mode": False }
+    default_config = { "apis": [], "admins": [int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))], "proxy": "", "full_mode": False }
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config)
         return default_config
@@ -103,7 +103,7 @@ def verify_fofa_api(key):
 
 def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
-    full_param = "&full=true" if CONFIG.get("full_mode"， False) else ""
+    full_param = "&full=true" if CONFIG.get("full_mode", False) else ""
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return _make_request(url)
 
@@ -115,35 +115,35 @@ async def get_best_api_key():
     tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
     
-    for i, (data, error) 在 enumerate(results):
-        if not error 和 data.get('is_vip'): return CONFIG['apis'][i], None
+    for i, (data, error) in enumerate(results):
+        if not error and data.get('is_vip'): return CONFIG['apis'][i], None
     
-    if results 和 not results[0][1]: return CONFIG['apis'][0], None
+    if results and not results[0][1]: return CONFIG['apis'][0], None
     return None, results[0][1] or "所有API Key均无效"
 
 # --- 任务管理 ---
 def _start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
-    current_jobs = context.job_queue。get_jobs_by_name(job_name)
+    current_jobs = context.job_queue.get_jobs_by_name(job_name)
     if current_jobs:
-        for job 在 current_jobs: job.schedule_removal()
-    context.job_queue。run_once(callback_func, 1, data=job_data, name=job_name)
+        for job in current_jobs: job.schedule_removal()
+    context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
     logger.info(f"已为聊天 {chat_id} 安排新任务: {job_name}")
 
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat。id
+    chat_id = update.effective_chat.id
     job_name = f"download_job_{chat_id}"
     current_jobs = context.job_queue.get_jobs_by_name(job_name)
     if not current_jobs:
         await update.message.reply_text("目前没有正在运行的下载任务。")
         return
-    for job 在 current_jobs: job.schedule_removal()
-    await update.message。reply_text("✅ 已强制停止所有后台下载任务。")
+    for job in current_jobs: job.schedule_removal()
+    await update.message.reply_text("✅ 已强制停止所有后台下载任务。")
 
 # --- Bot 命令 & 对话流程 ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message。reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。', parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。', parse_mode=ParseMode.MARKDOWN)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -178,12 +178,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message。reply_text("用法: `/host [key编号] <IP/域名>`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("用法: `/host [key编号] <IP/域名>`", parse_mode=ParseMode.MARKDOWN)
         return
 
     key_index_str = args[0]
-    api_key = 无
-    error = 无
+    api_key = None
+    error = None
     target_host = ""
 
     # 尝试解析Key编号
@@ -213,10 +213,10 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info = (
         f"🎯 *主机情报: `{escape_markdown(data.get('host', 'N/A'))}`*\n\n"
-        f"🗺️ *地理位置*: {escape_markdown(data.get('country_name'， 'N/A'))} ({escape_markdown(data.get('region', 'N/A'))})\n"
+        f"🗺️ *地理位置*: {escape_markdown(data.get('country_name', 'N/A'))} ({escape_markdown(data.get('region', 'N/A'))})\n"
         f"🏢 *组织*: {escape_markdown(data.get('org', 'N/A'))} (ASN: {data.get('asn', 'N/A')})\n"
         f"🕒 *更新时间*: {data.get('update_time', 'N/A')}\n\n"
-        f"📡 *开放端口*: `{', '。join(map(str, data.get('ports', [])))}`\n\n"
+        f"📡 *开放端口*: `{', '.join(map(str, data.get('ports', [])))}`\n\n"
         f"📦 *识别产品*:\n"
     )
     products = data.get('products', [])
@@ -230,11 +230,11 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     api_key = None
-    error = 无
+    error = None
     query_text = ""
 
     if not args:
-        await update.message。reply_text("用法: `/kkfofa [key编号] <查询语句>`")
+        await update.message.reply_text("用法: `/kkfofa [key编号] <查询语句>`")
         return ConversationHandler.END
 
     # 尝试解析Key编号
@@ -246,13 +246,13 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"用户指定使用第 {key_index+1} 个Key进行查询。")
         else:
             api_key, error = await get_best_api_key()
-            query_text = " "。join(args)
+            query_text = " ".join(args)
     except ValueError:
         api_key, error = await get_best_api_key()
-        query_text = " "。join(args)
+        query_text = " ".join(args)
 
     if error:
-        await update.message。reply_text(f"❌ 错误: {error}")
+        await update.message.reply_text(f"❌ 错误: {error}")
         return ConversationHandler.END
 
     msg = await update.message.reply_text("🔄 正在查询...")
@@ -325,7 +325,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.message。reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -339,7 +339,7 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
 async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.callback_query:
-            msg = await update.callback_query。edit_message_text("🔄 正在查询API Key状态...")
+            msg = await update.callback_query.edit_message_text("🔄 正在查询API Key状态...")
         else:
             msg = await update.message.reply_text("🔄 正在查询API Key状态...")
 
@@ -347,22 +347,22 @@ async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if CONFIG['apis']:
             tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
             results = await asyncio.gather(*tasks)
-            for i, (data, error) 在 enumerate(results):
+            for i, (data, error) in enumerate(results):
                 key_masked = f"`{CONFIG['apis'][i][:4]}...{CONFIG['apis'][i][-4:]}`"
                 if error:
                     status = f"❌ 无效"
                 else:
                     user = escape_markdown(data.get('username', 'N/A'))
                     is_vip = "✅ VIP" if data.get('is_vip') else "👤 普通"
-                    fcoin = data.get('fcoin'， 0)
+                    fcoin = data.get('fcoin', 0)
                     status = f"({user}, {is_vip}, F币: {fcoin})"
                 api_details.append(f"{i+1}. {key_masked} {status}")
 
-        api_message = "\n"。join(api_details) if api_details else "目前没有存储任何API密钥。"
+        api_message = "\n".join(api_details) if api_details else "目前没有存储任何API密钥。"
         
         full_mode_text = "✅ 查询所有历史" if CONFIG.get("full_mode") else "⏳ 仅查近一年"
         keyboard = [
-            [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_toggle_full')]，
+            [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_toggle_full')],
             [InlineKeyboardButton("➕ 添加", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除", callback_data='action_remove_api')],
             [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]
         ]
@@ -371,14 +371,14 @@ async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_SETTINGS_ACTION
     except Exception as e:
         logger.error(f"显示 API 菜单时出错: {e}", exc_info=True)
-        await context.bot。send_message(update.effective_chat.id, "显示菜单时发生内部错误，请重试。")
+        await context.bot.send_message(update.effective_chat.id, "显示菜单时发生内部错误，请重试。")
         return ConversationHandler.END
 
 
 async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("✏️ 设置/更新", callback_data='action_set_proxy')]，
-        [InlineKeyboardButton("🗑️ 清除", callback_data='action_delete_proxy')]，
+        [InlineKeyboardButton("✏️ 设置/更新", callback_data='action_set_proxy')],
+        [InlineKeyboardButton("🗑️ 清除", callback_data='action_delete_proxy')],
         [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]
     ]
     await update.callback_query.edit_message_text(f"🌐 *代理设置*\n当前: `{CONFIG.get('proxy') or '未设置'}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
@@ -387,7 +387,7 @@ async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    action = query.data。split('_'， 1)[1]
+    action = query.data.split('_', 1)[1]
 
     if action == 'back_main': return await settings_command(update, context)
     elif action == 'toggle_full':
