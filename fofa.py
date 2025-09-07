@@ -230,7 +230,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 @restricted
 async def set_proxy_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("请输入您的代理地址，格式为 `http://user:pass@host:port` 或 `socks5://host:port`\n例如: `http://127.0.0.1:7890`")
+    await update.message.reply_text("请输入您的代理地址，格式为 `http://user:pass@host:port` 或 `socks5://host:port`\n例如: `http://1227.0.0.1:7890`")
     return GET_PROXY
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -284,6 +284,10 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             date_parts = parts[1].strip().split("to")
             job_data['start_date'] = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
             job_data['end_date'] = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
+             # --- FIX: Add date range logical check ---
+            if job_data['start_date'] > job_data['end_date']:
+                await update.message.reply_text("❌ 错误：开始日期不能晚于结束日期。")
+                return ConversationHandler.END
             context.application.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{job_data['chat_id']}")
             await update.message.reply_text(f"⏳ 已收到按天下载任务！\n*查询*: `{job_data['base_query']}`\n*时间*: `{job_data['start_date'].date()}` 到 `{job_data['end_date'].date()}`\n任务已在后台开始。", parse_mode=ParseMode.MARKDOWN)
         except (ValueError, IndexError):
@@ -353,6 +357,12 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
         date_parts = date_range_str.lower().split("to")
         start_date = datetime.strptime(date_parts[0].strip(), "%Y-%m-%d")
         end_date = datetime.strptime(date_parts[1].strip(), "%Y-%m-%d")
+
+        # --- FIX: Add date range logical check ---
+        if start_date > end_date:
+            await update.message.reply_text("❌ 错误：开始日期不能晚于结束日期，请重新输入。")
+            return ASK_DATE_RANGE
+
         await update.message.reply_text(f"✅ 日期范围确认！任务已在后台开始。\n*查询*: `{base_query}`\n*时间*: `{start_date.date()}` 到 `{end_date.date()}`", parse_mode=ParseMode.MARKDOWN)
         job_data = {'chat_id': chat_id, 'base_query': base_query, 'start_date': start_date, 'end_date': end_date, 'api_key': api_key}
         context.application.job_queue.run_once(run_date_range_query, 0, data=job_data, name=f"date_range_{chat_id}")
@@ -668,4 +678,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
