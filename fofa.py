@@ -75,10 +75,10 @@ def escape_markdown(text: str) -> str:
 def restricted(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user。id
+        user_id = update.effective_user.id
         if user_id not in CONFIG.get('admins', []):
             message = "⛔️ 抱歉，您没有权限。"
-            if update.callback_query: await update.callback_query。answer(message, show_alert=True)
+            if update.callback_query: await update.callback_query.answer(message, show_alert=True)
             else: await update.message.reply_text(message)
             if isinstance(context.handler, ConversationHandler): return ConversationHandler.END
             return
@@ -134,11 +134,11 @@ def _start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_d
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     job_name = f"download_job_{chat_id}"
-    current_jobs = context.job_queue。get_jobs_by_name(job_name)
+    current_jobs = context.job_queue.get_jobs_by_name(job_name)
     if not current_jobs:
         await update.message.reply_text("目前没有正在运行的下载任务。")
         return
-    for job 在 current_jobs: job.schedule_removal()
+    for job in current_jobs: job.schedule_removal()
     await update.message.reply_text("✅ 已强制停止所有后台下载任务。")
 
 # --- Bot 命令 & 对话流程 ---
@@ -172,7 +172,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     `/cancel`
     取消当前对话操作。
     """
-    await update.message。reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,8 +182,8 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     key_index_str = args[0]
-    api_key = 无
-    error = 无
+    api_key = None
+    error = None
     target_host = ""
 
     # 尝试解析Key编号
@@ -195,13 +195,13 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"用户指定使用第 {key_index+1} 个Key进行查询。")
         else: # 编号无效或缺少目标
             api_key, error = await get_best_api_key()
-            target_host = " ".join(args)
+            target_host = " "。join(args)
     except ValueError: # 第一个参数不是数字
         api_key, error = await get_best_api_key()
-        target_host = " ".join(args)
+        target_host = " "。join(args)
 
     if error:
-        await update.message.reply_text(f"❌ 错误: {error}")
+        await update.message。reply_text(f"❌ 错误: {error}")
         return
 
     msg = await update.message.reply_text(f"正在查询主机 `{target_host}` 的详细信息...", parse_mode=ParseMode.MARKDOWN)
@@ -212,14 +212,14 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     info = (
-        f"🎯 *主机情报: `{escape_markdown(data.get('host', 'N/A'))}`*\n\n"
+        f"🎯 *主机情报: `{escape_markdown(data.get('host'， 'N/A'))}`*\n\n"
         f"🗺️ *地理位置*: {escape_markdown(data.get('country_name', 'N/A'))} ({escape_markdown(data.get('region', 'N/A'))})\n"
         f"🏢 *组织*: {escape_markdown(data.get('org', 'N/A'))} (ASN: {data.get('asn', 'N/A')})\n"
-        f"🕒 *更新时间*: {data.get('update_time', 'N/A')}\n\n"
-        f"📡 *开放端口*: `{', '.join(map(str, data.get('ports', [])))}`\n\n"
+        f"🕒 *更新时间*: {data.get('update_time'， 'N/A')}\n\n"
+        f"📡 *开放端口*: `{', '.join(map(str, data.get('ports'， [])))}`\n\n"
         f"📦 *识别产品*:\n"
     )
-    products = data.get('products', [])
+    products = data.get('products'， [])
     if products:
         for p in products: info += f"  - `{escape_markdown(p.get('product', '未知产品'))}` (分类: {escape_markdown(p.get('category', 'N/A'))})\n"
     else:
@@ -229,8 +229,8 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    api_key = None
-    error = None
+    api_key = 无
+    error = 无
     query_text = ""
 
     if not args:
@@ -242,11 +242,11 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         key_index = int(args[0]) - 1
         if 0 <= key_index < len(CONFIG['apis']) and len(args) > 1:
             api_key = CONFIG['apis'][key_index]
-            query_text = " ".join(args[1:])
+            query_text = " "。join(args[1:])
             logger.info(f"用户指定使用第 {key_index+1} 个Key进行查询。")
         else:
             api_key, error = await get_best_api_key()
-            query_text = " ".join(args)
+            query_text = " "。join(args)
     except ValueError:
         api_key, error = await get_best_api_key()
         query_text = " "。join(args)
@@ -255,19 +255,19 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 错误: {error}")
         return ConversationHandler.END
 
-    msg = await update.message。reply_text("🔄 正在查询...")
-    data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, 1, 1)
+    msg = await update.message.reply_text("🔄 正在查询...")
+    data, error = await asyncio.to_thread(fetch_fofa_data, api_key, query_text, 1， 1)
 
     if error:
         await msg.edit_text(f"❌ 查询出错: {error}")
         return ConversationHandler.END
 
-    total_size = data.get('size', 0)
+    total_size = data.get('size'， 0)
     if total_size == 0:
         await msg.edit_text("🤷‍♀️ 未找到结果。")
         return ConversationHandler.END
     
-    context.user_data。update({'query': query_text, 'total_size': total_size, 'api_key': api_key, 'chat_id': update.effective_chat.id})
+    context.user_data.update({'query': query_text, 'total_size': total_size, 'api_key': api_key, 'chat_id': update.effective_chat.id})
 
     if total_size <= 10000:
         await msg.edit_text(f"✅ 查询到 {total_size} 条，开始下载...")
@@ -275,7 +275,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     else:
         keyboard = [
-            [InlineKeyboardButton("🗓️ 按天下载", callback_data='mode_daily'), InlineKeyboardButton("💎 全部下载", callback_data='mode_full')]，
+            [InlineKeyboardButton("🗓️ 按天下载", callback_data='mode_daily'), InlineKeyboardButton("💎 全部下载", callback_data='mode_full')],
             [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]
         ]
         await msg.edit_text(f"📊 找到 {total_size} 条结果。\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -298,7 +298,7 @@ async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def get_date_range_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        start_str, end_str = [s.strip() for s 在 update.message.text。lower().split("to")]
+        start_str, end_str = [s.strip() for s in update.message.text.lower().split("to")]
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
 
@@ -311,7 +311,7 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
         _start_download_job(context, run_date_range_query, context.user_data.copy())
         return ConversationHandler.END
     except (ValueError, IndexError):
-        await update.message。reply_text("❌ 格式错误，请重新输入。")
+        await update.message.reply_text("❌ 格式错误，请重新输入。")
         return STATE_KKFOFA_DATE
 
 # --- **设置菜单核心逻辑 (稳健版)** ---
@@ -525,7 +525,7 @@ def main():
     try: TELEGRAM_BOT_TOKEN = base64.b64decode('ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==').decode('utf-8')
     except Exception: logger.error("无法解码 Bot Token！"); return
     
-    application = Application.builder()。token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("kkfofa", kkfofa_command), CommandHandler("settings", settings_command)],
