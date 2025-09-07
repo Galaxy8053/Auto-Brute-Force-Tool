@@ -65,6 +65,12 @@ def save_config(config):
 
 CONFIG = load_config()
 
+# --- 辅助函数 ---
+def escape_markdown(text: str) -> str:
+    """转义 Telegram Markdown V1 的特殊字符"""
+    escape_chars = '_*`['
+    return "".join(['\\' + char if char in escape_chars else char for char in text])
+
 # --- 装饰器 ---
 def restricted(func):
     @wraps(func)
@@ -102,7 +108,6 @@ def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     return _make_request(url)
 
 def fetch_host_details(key, host):
-    """新增：获取单个主机的详细信息"""
     return _make_request(f"https://fofa.info/api/v1/host/{host}?key={key}")
 
 async def get_best_api_key():
@@ -141,37 +146,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。', parse_mode=ParseMode.MARKDOWN)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """新增：显示帮助信息"""
     help_text = """
     📖 *Fofa 机器人指令手册*
 
     *🔍 资产查询*
     `/kkfofa <查询语句>`
-    进行大范围资产搜索。如果结果超出1万条，会提示您选择下载模式。
+    进行大范围资产搜索。
     *示例:* `/kkfofa nezha`
 
     *ℹ️ 单目标详情*
     `/host <IP/域名>`
-    查询单个目标的详细情报，包括端口、产品、地理位置等。
+    查询单个目标的详细情报。
     *示例:* `/host 8.8.8.8`
 
     *⚙️ 管理与设置*
     `/settings`
-    打开交互式设置菜单，管理 API Key、代理和查询范围。在菜单中可以清晰地看到每个 Key 的 VIP 状态和 F 币余额。
+    打开交互式设置菜单，管理 API Key、代理和查询范围。
 
     *🛑 停止任务*
     `/stop`
-    强制停止由您发起的所有正在后台运行的下载任务。
+    强制停止所有正在后台运行的下载任务。
 
     *❌ 取消操作*
     `/cancel`
-    取消当前正在进行的对话操作（如添加Key、输入日期等）。
+    取消当前正在进行的对话操作。
     """
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """新增：处理 /host 命令"""
     if not context.args:
         await update.message.reply_text("用法: `/host <IP/域名>`", parse_mode=ParseMode.MARKDOWN)
         return
@@ -190,16 +193,16 @@ async def host_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     info = (
-        f"🎯 *主机情报: `{data.get('host', 'N/A')}`*\n\n"
-        f"🗺️ *地理位置*: {data.get('country_name', 'N/A')} ({data.get('region', 'N/A')}, {data.get('city', 'N/A')})\n"
-        f"🏢 *组织*: {data.get('org', 'N/A')} (ASN: {data.get('asn', 'N/A')})\n"
+        f"🎯 *主机情报: `{escape_markdown(data.get('host', 'N/A'))}`*\n\n"
+        f"🗺️ *地理位置*: {escape_markdown(data.get('country_name', 'N/A'))} ({escape_markdown(data.get('region', 'N/A'))})\n"
+        f"🏢 *组织*: {escape_markdown(data.get('org', 'N/A'))} (ASN: {data.get('asn', 'N/A')})\n"
         f"🕒 *更新时间*: {data.get('update_time', 'N/A')}\n\n"
         f"📡 *开放端口*: `{', '.join(map(str, data.get('ports', [])))}`\n\n"
         f"📦 *识别产品*:\n"
     )
     products = data.get('products', [])
     if products:
-        for p in products: info += f"  - `{p.get('product', '未知产品')}` (分类: {p.get('category', 'N/A')})\n"
+        for p in products: info += f"  - `{escape_markdown(p.get('product', '未知产品'))}` (分类: {escape_markdown(p.get('category', 'N/A'))})\n"
     else:
         info += "  - 未识别到任何产品。\n"
     await msg.edit_text(info, parse_mode=ParseMode.MARKDOWN)
@@ -275,7 +278,7 @@ async def get_date_range_from_message(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("❌ 格式错误，请重新输入。")
         return STATE_KKFOFA_DATE
 
-# --- **设置菜单核心逻辑 (增强版)** ---
+# --- **设置菜单核心逻辑 (稳健版)** ---
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -298,39 +301,43 @@ async def settings_callback_handler(update: Update, context: ContextTypes.DEFAUL
     elif menu == 'proxy': return await show_proxy_menu(update, context)
 
 async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """增强：显示 API 管理菜单 (包含F币、VIP状态等)"""
-    # 确定消息发送/编辑的方式
-    if update.callback_query:
-        msg = await update.callback_query.edit_message_text("🔄 正在查询API Key状态...")
-    else: # 从 get_key, remove_api 等文本消息处理器调用时
-        msg = await update.message.reply_text("🔄 正在查询API Key状态...")
+    try:
+        if update.callback_query:
+            msg = await update.callback_query.edit_message_text("🔄 正在查询API Key状态...")
+        else:
+            msg = await update.message.reply_text("🔄 正在查询API Key状态...")
 
-    api_details = []
-    if CONFIG['apis']:
-        tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
-        results = await asyncio.gather(*tasks)
-        for i, (data, error) in enumerate(results):
-            key_masked = f"`{CONFIG['apis'][i][:4]}...{CONFIG['apis'][i][-4:]}`"
-            if error:
-                status = f"❌ 无效"
-            else:
-                user = data.get('username', 'N/A')
-                is_vip = "✅ VIP" if data.get('is_vip') else "👤 普通"
-                fcoin = data.get('fcoin', 0)
-                status = f"({user}, {is_vip}, F币: {fcoin})"
-            api_details.append(f"{i+1}. {key_masked} {status}")
+        api_details = []
+        if CONFIG['apis']:
+            tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
+            results = await asyncio.gather(*tasks)
+            for i, (data, error) in enumerate(results):
+                key_masked = f"`{CONFIG['apis'][i][:4]}...{CONFIG['apis'][i][-4:]}`"
+                if error:
+                    status = f"❌ 无效"
+                else:
+                    user = escape_markdown(data.get('username', 'N/A')) # <--- **关键修复**
+                    is_vip = "✅ VIP" if data.get('is_vip') else "👤 普通"
+                    fcoin = data.get('fcoin', 0)
+                    status = f"({user}, {is_vip}, F币: {fcoin})"
+                api_details.append(f"{i+1}. {key_masked} {status}")
 
-    api_message = "\n".join(api_details) if api_details else "目前没有存储任何API密钥。"
-    
-    full_mode_text = "✅ 查询所有历史" if CONFIG.get("full_mode") else "⏳ 仅查近一年"
-    keyboard = [
-        [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_toggle_full')],
-        [InlineKeyboardButton("➕ 添加", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除", callback_data='action_remove_api')],
-        [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]
-    ]
-    
-    await msg.edit_text(f"🔑 *API 管理*\n\n{api_message}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-    return STATE_SETTINGS_ACTION
+        api_message = "\n".join(api_details) if api_details else "目前没有存储任何API密钥。"
+        
+        full_mode_text = "✅ 查询所有历史" if CONFIG.get("full_mode") else "⏳ 仅查近一年"
+        keyboard = [
+            [InlineKeyboardButton(f"时间范围: {full_mode_text}", callback_data='action_toggle_full')],
+            [InlineKeyboardButton("➕ 添加", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除", callback_data='action_remove_api')],
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]
+        ]
+        
+        await msg.edit_text(f"🔑 *API 管理*\n\n{api_message}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        return STATE_SETTINGS_ACTION
+    except Exception as e:
+        logger.error(f"显示 API 菜单时出错: {e}", exc_info=True)
+        await context.bot.send_message(update.effective_chat.id, "显示菜单时发生内部错误，请重试。")
+        return ConversationHandler.END
+
 
 async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -378,13 +385,14 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if key not in CONFIG['apis']:
             CONFIG['apis'].append(key)
             save_config(CONFIG)
-            await msg.edit_text(f"✅ 添加成功！你好, {data.get('username', 'user')}!")
+            await msg.edit_text(f"✅ 添加成功！你好, {escape_markdown(data.get('username', 'user'))}!", parse_mode=ParseMode.MARKDOWN)
         else:
             await msg.edit_text(f"ℹ️ 该Key已存在。")
     else:
         await msg.edit_text(f"❌ 验证失败: {error}")
     
     await asyncio.sleep(1.5)
+    await msg.delete() # 删除临时消息
     return await show_api_menu(update, context)
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,8 +400,7 @@ async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_config(CONFIG)
     await update.message.reply_text(f"✅ 代理已更新。")
     await asyncio.sleep(1)
-    # 模拟一个回调查询来刷新菜单
-    class DummyUpdate:
+    class DummyUpdate: # 模拟回调以刷新菜单
         class DummyQuery:
             async def answer(self): pass
             async def edit_message_text(self, *args, **kwargs): await update.message.reply_text(*args, **kwargs)
