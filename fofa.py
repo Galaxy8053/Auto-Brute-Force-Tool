@@ -113,15 +113,12 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
     valid_keys = []
     for i, (data, error) in enumerate(results):
         if not error and data: valid_keys.append({'key': CONFIG['apis'][i], 'index': i + 1, 'is_vip': data.get('is_vip', False)})
-    
     if not valid_keys: return None, None, "所有API Key均无效或验证失败"
-    
     prioritized_keys = sorted(valid_keys, key=lambda x: x['is_vip'], reverse=True)
     keys_to_try = prioritized_keys
     if preferred_key_index is not None:
         start_index = next((i for i, k in enumerate(prioritized_keys) if k['index'] == preferred_key_index), -1)
         if start_index != -1: keys_to_try = prioritized_keys[start_index:] + prioritized_keys[:start_index]
-
     last_error = "没有可用的API Key。"
     for key_info in keys_to_try:
         data, error = await asyncio.to_thread(query_func, key_info['key'])
@@ -133,28 +130,22 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- **关键修复：使用 bot_data 存储停止标志** ---
 def get_stop_flag_name(chat_id):
     return f'stop_job_{chat_id}'
 
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     stop_flag = get_stop_flag_name(chat_id)
-    # 写入 bot_data
     context.bot_data[stop_flag] = True
     await update.message.reply_text("✅ 已发送停止信号。后台任务将在当前循环结束后停止。")
 
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
-    
     current_jobs = context.job_queue.get_jobs_by_name(job_name)
     for job in current_jobs: job.schedule_removal()
-    
     stop_flag = get_stop_flag_name(chat_id)
-    # 从 bot_data 中移除旧标志
     context.bot_data.pop(stop_flag, None)
-    
     context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,7 +171,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_text = " ".join(args[1:])
     except (ValueError, IndexError): query_text = " ".join(args)
     msg = await update.message.reply_text("🔄 正在查询...")
-    query_func = lambda key: fetch_fofa_data(key, query_text, 1, 1)
+    query_func = lambda key: fetch_fofa_data(key, query_text, 1, 1, "host")
     data, used_key_index, error = await execute_query_with_fallback(query_func, key_index)
     if error: await msg.edit_text(f"❌ 查询出错: {error}"); return ConversationHandler.END
     total_size = data.get('size', 0)
@@ -190,14 +181,14 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if total_size <= 10000:
         await msg.edit_text(f"{success_message}\n开始下载..."); await start_download_job(context, run_full_download_query, context.user_data); return ConversationHandler.END
     else:
-        keyboard = [[InlineKeyboardButton("💎 全部下载", callback_data='mode_full'), InlineKeyboardButton("🌀 深度追溯下载", callback_data='mode_traceback')], [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]]
+        keyboard = [[InlineKeyboardButton("💎 全部下载", callback_data='mode__full'), InlineKeyboardButton("🌀 深度追溯下载", callback_data='mode_traceback')], [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]]
         await msg.edit_text(f"{success_message}\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard)); return STATE_KKFOFA_MODE
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); mode = query.data
-    if mode == 'mode_full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, context.user_data)
-    elif mode == 'mode_traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, context.user_data)
-    elif mode == 'mode_cancel': await query.edit_message_text("操作已取消。")
+    query = update.callback_query; await query.answer(); mode = query.data.split('_')[2]
+    if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, context.user_data)
+    elif mode == 'traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, context.user_data)
+    elif mode == 'cancel': await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
 @restricted
@@ -208,12 +199,11 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
-# ... (settings functions remain the same)
+# ... (settings functions are correct and remain the same)
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_')[1]
     if menu == 'api': return await show_api_menu(update, context)
     elif menu == 'proxy': return await show_proxy_menu(update, context)
-
 async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg = await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)("🔄 正在查询API Key状态...")
@@ -233,11 +223,9 @@ async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_SETTINGS_ACTION
     except Exception as e:
         logger.error(f"显示 API 菜单时出错: {e}", exc_info=True); await context.bot.send_message(update.effective_chat.id, "显示菜单时发生内部错误。"); return ConversationHandler.END
-
 async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("✏️ 设置/更新", callback_data='action_set_proxy')], [InlineKeyboardButton("🗑️ 清除", callback_data='action_delete_proxy')], [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]]
     await update.callback_query.edit_message_text(f"🌐 *代理设置*\n当前: `{CONFIG.get('proxy') or '未设置'}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN); return STATE_SETTINGS_ACTION
-
 async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); action = query.data.split('_', 1)[1]
     if action == 'back_main': return await settings_command(update, context)
@@ -248,7 +236,6 @@ async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("请回复要删除的API Key编号。"); return STATE_REMOVE_API
     elif action == 'set_proxy': await query.edit_message_text("请输入代理地址。"); return STATE_GET_PROXY
     elif action == 'delete_proxy': CONFIG['proxy'] = ""; save_config(CONFIG); await query.edit_message_text("✅ 代理已清除。"); await asyncio.sleep(1); return await settings_command(update, context)
-
 async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = update.message.text.strip(); msg = await update.message.reply_text("正在验证...")
     data, error = await asyncio.to_thread(verify_fofa_api, key)
@@ -257,12 +244,10 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: await msg.edit_text(f"ℹ️ 该Key已存在。")
     else: await msg.edit_text(f"❌ 验证失败: {error}")
     await asyncio.sleep(2); await msg.delete(); return await show_api_menu(update, context)
-
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CONFIG['proxy'] = update.message.text.strip(); save_config(CONFIG); await update.message.reply_text(f"✅ 代理已更新。"); await asyncio.sleep(1)
     class DummyUpdate: callback_query = type('Q',(),{'answer':(lambda:None),'edit_message_text':(lambda*a,**kw:update.message.reply_text(*a,**kw))})()
     return await show_proxy_menu(DummyUpdate(), context)
-
 async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         index = int(update.message.text) - 1
@@ -276,74 +261,79 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text('操作已取消。')
     context.user_data.clear(); return ConversationHandler.END
 
-# --- **关键修复：从 bot_data 读取停止标志** ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
-    job_data = context.job.data
-    chat_id, query_text, total_size = job_data['chat_id'], job_data['query'], job_data['total_size']
-    output_filename = f"fofa_full_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
-    unique_results = set()
-    msg = await context.bot.send_message(chat_id, "⏳ 开始全量下载任务...")
-    pages_to_fetch = (total_size + 9999) // 10000
+    job_data = context.job.data; chat_id, query_text, total_size = job_data['chat_id'], job_data['query'], job_data['total_size']
+    output_filename = f"fofa_full_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"; unique_results = set()
+    msg = await context.bot.send_message(chat_id, "⏳ 开始全量下载任务..."); pages_to_fetch = (total_size + 9999) // 10000
     stop_flag = get_stop_flag_name(chat_id)
-
     for page in range(1, pages_to_fetch + 1):
-        if context.bot_data.get(stop_flag): # 从 bot_data 读取
-            await msg.edit_text("🌀 下载任务已手动停止。")
-            break
+        if context.bot_data.get(stop_flag): await msg.edit_text("🌀 下载任务已手动停止."); break
         try: await msg.edit_text(f"下载进度: {len(unique_results)}/{total_size} (Page {page}/{pages_to_fetch})...")
         except: pass
-        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, page))
+        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, page, 10000, "host"))
         if error:
-            error_message = f"❌ 第 {page} 页下载出错: {error}" + ("\n\n任务已因F点不足而终止。" if "[820031]" in str(error) else "")
-            await msg.edit_text(error_message); break
+            await msg.edit_text(f"❌ 第 {page} 页下载出错: {error}" + ("\n\n任务已因F点不足而终止。" if "[820031]" in str(error) else "")); break
         if not data.get('results'): break
         unique_results.update(data.get('results', []))
-    
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(unique_results))
         await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。正在发送...")
         with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    elif not context.bot_data.get(stop_flag): # 从 bot_data 读取
-        await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
-    
-    context.bot_data.pop(stop_flag, None) # 从 bot_data 移除
+    elif not context.bot_data.get(stop_flag): await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
+    context.bot_data.pop(stop_flag, None)
 
+# --- **最终修复：使用精确时间戳进行追溯** ---
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
-    job_data = context.job.data
-    chat_id, base_query = job_data['chat_id'], job_data['query']
+    job_data = context.job.data; chat_id, base_query = job_data['chat_id'], job_data['query']
     output_filename = f"fofa_traceback_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
-    unique_results, page_count, last_before_date = set(), 0, None
+    unique_results, page_count, last_page_timestamp, termination_reason = set(), 0, None, ""
     msg = await context.bot.send_message(chat_id, "⏳ 开始深度追溯下载...")
     current_query = base_query
     stop_flag = get_stop_flag_name(chat_id)
-
     while True:
         page_count += 1
-        if context.bot_data.get(stop_flag): # 从 bot_data 读取
-            await msg.edit_text("🌀 深度追溯任务已手动停止。"); break
-        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, page_size=10000, fields="host,mtime"))
+        if context.bot_data.get(stop_flag): termination_reason = "\n\n🌀 任务已手动停止。"; break
+        
+        # 请求host和mtime两个字段
+        query_func = lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,mtime")
+        data, _, error = await execute_query_with_fallback(query_func)
+        
         if error:
-            error_message = f"❌ 第 {page_count} 轮追溯出错: {error}" + ("\n\n任务因F点不足终止。" if "[820031]" in str(error) else "")
-            await msg.edit_text(error_message); break
+            termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点不足)" if "[820031]" in str(error) else "")
+            break
+            
         results = data.get('results', [])
-        if not results: break
+        if not results:
+            termination_reason = "\n\nℹ️ 已获取所有查询结果。"
+            break
+            
         unique_results.update([r[0] for r in results])
         try: await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮)")
         except: pass
-        before_date = results[-1][1].split(" ")[0]
-        if before_date == last_before_date: logger.warning("追溯日期未变，终止任务。"); break
-        last_before_date = before_date; current_query = f'({base_query}) && before="{before_date}"'
 
+        # **核心修复：使用完整的 'YYYY-MM-DD HH:mm:ss' 时间戳**
+        next_page_timestamp = results[-1][1]
+
+        if next_page_timestamp == last_page_timestamp:
+            termination_reason = "\n\n⚠️ 任务因后续结果时间戳完全相同而终止，已达数据查询边界。"
+            logger.warning("追溯时间戳未变，终止任务。")
+            break
+            
+        last_page_timestamp = next_page_timestamp
+        current_query = f'({base_query}) && before="{next_page_timestamp}"'
+        
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
-        await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。\n正在发送...")
+        final_message = f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件..."
+        await msg.edit_text(final_message)
         with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    elif not context.bot_data.get(stop_flag): # 从 bot_data 读取
-        await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
+    else:
+        await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
+        
+    context.bot_data.pop(stop_flag, None)
 
-    context.bot_data.pop(stop_flag, None) # 从 bot_data 移除
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"), BotCommand("stop", "🛑 停止任务"), BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消")])
@@ -356,22 +346,18 @@ def main():
     except Exception as e:
         logger.error(f"无法解码 Bot Token！请检查Base64编码是否正确。错误: {e}")
         return
-
     application_builder = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init)
-    
     system_timezone_str = get_system_timezone_name()
     logger.info(f"检测到系统时区: {system_timezone_str}")
-    
     job_queue = JobQueue()
     job_queue.scheduler.configure(timezone=timezone(system_timezone_str))
     application = application_builder.job_queue(job_queue).build()
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("kkfofa", kkfofa_command), CommandHandler("settings", settings_command)],
         states={
-            STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern="^mode_")],
-            STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern="^settings_")],
-            STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern="^action_")],
+            STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern=r"^mode_")],
+            STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern=r"^settings_")],
+            STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern=r"^action_")],
             STATE_GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
             STATE_GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
             STATE_REMOVE_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)],
