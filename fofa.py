@@ -181,11 +181,13 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if total_size <= 10000:
         await msg.edit_text(f"{success_message}\n开始下载..."); await start_download_job(context, run_full_download_query, context.user_data); return ConversationHandler.END
     else:
-        keyboard = [[InlineKeyboardButton("💎 全部下载", callback_data='mode__full'), InlineKeyboardButton("🌀 深度追溯下载", callback_data='mode_traceback')], [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]]
+        # **修复：确保 callback_data 格式一致**
+        keyboard = [[InlineKeyboardButton("💎 全部下载", callback_data='mode_full'), InlineKeyboardButton("🌀 深度追溯下载", callback_data='mode_traceback')], [InlineKeyboardButton("❌ 取消", callback_data='mode_cancel')]]
         await msg.edit_text(f"{success_message}\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard)); return STATE_KKFOFA_MODE
 
+# **修复：修正 split 的索引**
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); mode = query.data.split('_')[2]
+    query = update.callback_query; await query.answer(); mode = query.data.split('_')[1] # 使用索引 1
     if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, context.user_data)
     elif mode == 'traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, context.user_data)
     elif mode == 'cancel': await query.edit_message_text("操作已取消。")
@@ -199,7 +201,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
-# ... (settings functions are correct and remain the same)
+# ... (settings functions remain the same)
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_')[1]
     if menu == 'api': return await show_api_menu(update, context)
@@ -283,7 +285,6 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     elif not context.bot_data.get(stop_flag): await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
     context.bot_data.pop(stop_flag, None)
 
-# --- **最终修复：使用精确时间戳进行追溯** ---
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data; chat_id, base_query = job_data['chat_id'], job_data['query']
     output_filename = f"fofa_traceback_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
@@ -294,35 +295,25 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     while True:
         page_count += 1
         if context.bot_data.get(stop_flag): termination_reason = "\n\n🌀 任务已手动停止。"; break
-        
-        # 请求host和mtime两个字段
         query_func = lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,mtime")
         data, _, error = await execute_query_with_fallback(query_func)
-        
         if error:
             termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点不足)" if "[820031]" in str(error) else "")
             break
-            
         results = data.get('results', [])
         if not results:
             termination_reason = "\n\nℹ️ 已获取所有查询结果。"
             break
-            
         unique_results.update([r[0] for r in results])
         try: await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮)")
         except: pass
-
-        # **核心修复：使用完整的 'YYYY-MM-DD HH:mm:ss' 时间戳**
         next_page_timestamp = results[-1][1]
-
         if next_page_timestamp == last_page_timestamp:
             termination_reason = "\n\n⚠️ 任务因后续结果时间戳完全相同而终止，已达数据查询边界。"
             logger.warning("追溯时间戳未变，终止任务。")
             break
-            
         last_page_timestamp = next_page_timestamp
         current_query = f'({base_query}) && before="{next_page_timestamp}"'
-        
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
         final_message = f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件..."
@@ -331,9 +322,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         os.remove(output_filename)
     else:
         await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
-        
     context.bot_data.pop(stop_flag, None)
-
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"), BotCommand("stop", "🛑 停止任务"), BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消")])
@@ -353,6 +342,7 @@ def main():
     job_queue.scheduler.configure(timezone=timezone(system_timezone_str))
     application = application_builder.job_queue(job_queue).build()
     conv_handler = ConversationHandler(
+        # **修复：修正 pattern**
         entry_points=[CommandHandler("kkfofa", kkfofa_command), CommandHandler("settings", settings_command)],
         states={
             STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern=r"^mode_")],
