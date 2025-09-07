@@ -105,11 +105,11 @@ def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return _make_request(url)
 
-async def execute_query_with_fallback(query_func, preferred_key_index=无):
+async def execute_query_with_fallback(query_func, preferred_key_index=None):
     tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
-    vip_keys, normal_keys = []， []
-    for i, (data, error) 在 enumerate(results):
+    vip_keys, normal_keys = [], []
+    for i, (data, error) in enumerate(results):
         key_info = {'key': CONFIG['apis'][i], 'index': i + 1}
         if not error:
             if data.get('is_vip'): vip_keys.append(key_info)
@@ -118,43 +118,43 @@ async def execute_query_with_fallback(query_func, preferred_key_index=无):
     if not prioritized_keys: return None, None, "所有API Key均无效或验证失败"
 
     keys_to_try = prioritized_keys
-    if preferred_key_index is not 无:
-        start_index = 下一处((i for i, k 在 enumerate(prioritized_keys) if k['index'] == preferred_key_index), -1)
+    if preferred_key_index is not None:
+        start_index = next((i for i, k in enumerate(prioritized_keys) if k['index'] == preferred_key_index), -1)
         if start_index != -1: keys_to_try = prioritized_keys[start_index:] + prioritized_keys[:start_index]
 
     last_error = "没有可用的API Key。"
     for key_info in keys_to_try:
         data, error = await asyncio.to_thread(query_func, key_info['key'])
-        if not error: return data, key_info['index']， 无
+        if not error: return data, key_info['index'], None
         last_error = error
         if "[820031]" in str(error):
             logger.warning(f"Key [#{key_info['index']}] F点不足，尝试下一个...")
             continue
-        else: return 无, key_info['index'], error
+        else: return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
 # --- 任务管理 ---
 def _start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
-    current_jobs = context.job_queue。get_jobs_by_name(job_name)
+    current_jobs = context.job_queue.get_jobs_by_name(job_name)
     if current_jobs:
         for job in current_jobs: job.schedule_removal()
-    context.job_queue。run_once(callback_func, 1, data=job_data, name=job_name)
+    context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
 
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat。id
+    chat_id = update.effective_chat.id
     job_name = f"download_job_{chat_id}"
     current_jobs = context.job_queue.get_jobs_by_name(job_name)
     if not current_jobs:
         await update.message.reply_text("目前没有正在运行的下载任务。")
         return
-    for job 在 current_jobs: job.schedule_removal()
-    await update.message。reply_text("✅ 已强制停止所有后台下载任务。")
+    for job in current_jobs: job.schedule_removal()
+    await update.message.reply_text("✅ 已强制停止所有后台下载任务。")
 
 # --- Bot 命令 & 对话流程 ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message。reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。', parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。', parse_mode=ParseMode.MARKDOWN)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -178,7 +178,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     `/cancel`
     取消当前对话操作。
     """
-    await update.message。reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,17 +368,17 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         query_func = lambda key: fetch_fofa_data(key, current_query, page_size=10000, fields="host,mtime")
         data, _, error = await execute_query_with_fallback(query_func)
 
-        if error 和 "[820031]" not 在 str(error) 和 "未找到结果" not 在 str(error):
+        if error and "[820031]" not in str(error) and "未找到结果" not in str(error):
             await msg.edit_text(f"❌ 在第 {page_count} 轮追溯时出错: {error}"); return
         
-        results = data.get('results'， []) if data else []
+        results = data.get('results', []) if data else []
         if not results: break
 
-        for result 在 results: unique_results.add(result[0])
+        for result in results: unique_results.add(result[0])
         try: await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮)")
         except: pass
 
-        before_date = results[-1][1]。split(" ")[0]
+        before_date = results[-1][1].split(" ")[0]
         if before_date == last_before_date:
             logger.warning("追溯日期未改变，为防止死循环，任务终止。"); break
         last_before_date = before_date
@@ -386,9 +386,9 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
 
     with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
     await msg.edit_text(f"✅ 深度追溯下载完成！共 {len(unique_results)} 条。\n正在发送文件...")
-    if os.path。getsize(output_filename) > 0:
+    if os.path.getsize(output_filename) > 0:
         with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
-    else: await context.bot。send_message(chat_id, "🤷‍♀️ 任务完成，文件为空。")
+    else: await context.bot.send_message(chat_id, "🤷‍♀️ 任务完成，文件为空。")
     os.remove(output_filename)
 
 async def post_init(application: Application):
@@ -399,17 +399,17 @@ def main():
     try: TELEGRAM_BOT_TOKEN = base64.b64decode('ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw==').decode('utf-8')
     except Exception: logger.error("无法解码 Bot Token！"); return
     
-    application = Application.builder()。token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("kkfofa", kkfofa_command), CommandHandler("settings", settings_command)],
         states={
-            STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern="^mode_")]，
+            STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern="^mode_")],
             STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern="^settings_")],
-            STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern="^action_")]，
+            STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern="^action_")],
             STATE_GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)],
             STATE_GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)],
             STATE_REMOVE_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)],
-        }，
+        },
         fallbacks=[CommandHandler("cancel", cancel)], persistent=False, name="main_conversation"
     )
     application.add_handler(CommandHandler("start", start)); application.add_handler(CommandHandler("help", help_command)); application.add_handler(CommandHandler("stop", stop_all_tasks)); application.add_handler(conv_handler)
