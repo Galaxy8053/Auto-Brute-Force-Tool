@@ -41,7 +41,6 @@ CONFIG_FILE = 'config.json'
 ) = range(6)
 
 def load_config():
-    # 从旧脚本中提取管理员ID并设为默认值
     default_admin_id = int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))
     default_config = { "apis": [], "admins": [default_admin_id], "proxy": "", "full_mode": False }
     if not os.path.exists(CONFIG_FILE):
@@ -118,7 +117,6 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
     if not valid_keys: return None, None, "所有API Key均无效或验证失败"
     
     prioritized_keys = sorted(valid_keys, key=lambda x: x['is_vip'], reverse=True)
-
     keys_to_try = prioritized_keys
     if preferred_key_index is not None:
         start_index = next((i for i, k in enumerate(prioritized_keys) if k['index'] == preferred_key_index), -1)
@@ -135,13 +133,15 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
+# --- **关键修复：使用 bot_data 存储停止标志** ---
 def get_stop_flag_name(chat_id):
     return f'stop_job_{chat_id}'
 
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     stop_flag = get_stop_flag_name(chat_id)
-    context.chat_data[stop_flag] = True
+    # 写入 bot_data
+    context.bot_data[stop_flag] = True
     await update.message.reply_text("✅ 已发送停止信号。后台任务将在当前循环结束后停止。")
 
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
@@ -150,8 +150,10 @@ async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, 
     
     current_jobs = context.job_queue.get_jobs_by_name(job_name)
     for job in current_jobs: job.schedule_removal()
+    
     stop_flag = get_stop_flag_name(chat_id)
-    context.chat_data.pop(stop_flag, None)
+    # 从 bot_data 中移除旧标志
+    context.bot_data.pop(stop_flag, None)
     
     context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
 
@@ -206,6 +208,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
+# ... (settings functions remain the same)
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_')[1]
     if menu == 'api': return await show_api_menu(update, context)
@@ -273,6 +276,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text('操作已取消。')
     context.user_data.clear(); return ConversationHandler.END
 
+# --- **关键修复：从 bot_data 读取停止标志** ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
     chat_id, query_text, total_size = job_data['chat_id'], job_data['query'], job_data['total_size']
@@ -283,7 +287,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     stop_flag = get_stop_flag_name(chat_id)
 
     for page in range(1, pages_to_fetch + 1):
-        if context.chat_data.get(stop_flag):
+        if context.bot_data.get(stop_flag): # 从 bot_data 读取
             await msg.edit_text("🌀 下载任务已手动停止。")
             break
         try: await msg.edit_text(f"下载进度: {len(unique_results)}/{total_size} (Page {page}/{pages_to_fetch})...")
@@ -300,10 +304,10 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。正在发送...")
         with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    elif not context.chat_data.get(stop_flag):
+    elif not context.bot_data.get(stop_flag): # 从 bot_data 读取
         await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
     
-    context.chat_data.pop(stop_flag, None)
+    context.bot_data.pop(stop_flag, None) # 从 bot_data 移除
 
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
@@ -316,7 +320,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
 
     while True:
         page_count += 1
-        if context.chat_data.get(stop_flag):
+        if context.bot_data.get(stop_flag): # 从 bot_data 读取
             await msg.edit_text("🌀 深度追溯任务已手动停止。"); break
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, page_size=10000, fields="host,mtime"))
         if error:
@@ -336,17 +340,16 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。\n正在发送...")
         with open(output_filename, 'rb') as doc: await context.bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    elif not context.chat_data.get(stop_flag):
+    elif not context.bot_data.get(stop_flag): # 从 bot_data 读取
         await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
 
-    context.chat_data.pop(stop_flag, None)
+    context.bot_data.pop(stop_flag, None) # 从 bot_data 移除
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"), BotCommand("stop", "🛑 停止任务"), BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消")])
     logger.info("✅ 命令菜单已设置！")
 
 def main():
-    # --- 已填入您原来脚本中的Bot Token ---
     try:
         encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
         TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
