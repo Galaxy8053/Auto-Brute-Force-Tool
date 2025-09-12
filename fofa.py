@@ -16,7 +16,7 @@ from telegram.ext import (
     ConversationHandler,
     MessageHandler,
     CallbackQueryHandler,
-    filters, # 使用新版小写的 filters
+    filters,
     JobQueue
 )
 from pytz import timezone
@@ -29,7 +29,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING) # 减少 httpx 的日志输出
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- 全局变量和常量 ---
@@ -95,9 +95,8 @@ HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 
 async def _make_request_async(url: str):
     proxies = {"http://": CONFIG["proxy"], "https://": CONFIG["proxy"]} if CONFIG.get("proxy") else None
+    loop = asyncio.get_event_loop()
     try:
-        # 使用 aiohttp 或 httpx 可以更好地与 asyncio 集成，但 requests 在后台线程中运行也同样有效
-        loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, lambda: requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies=proxies))
         res.raise_for_status()
         data = res.json()
@@ -252,8 +251,8 @@ async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CONFIG['proxy'] = update.message.text.strip(); save_config(CONFIG)
     await update.message.reply_text(f"✅ 代理已更新。")
     await asyncio.sleep(1)
-    await show_proxy_menu(update, context)
-    return STATE_SETTINGS_ACTION
+    await update.message.reply_text("请重新输入 /settings 进入设置菜单。")
+    return ConversationHandler.END
 
 async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -326,7 +325,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.pop(stop_flag, None)
 
 # --- 主函数 ---
-async def main():
+async def main() -> None:
     try:
         encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
         TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
@@ -335,7 +334,6 @@ async def main():
         
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # 统一的对话处理器
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("kkfofa", kkfofa_command), CommandHandler("settings", settings_command)],
         states={
@@ -354,14 +352,25 @@ async def main():
     application.add_handler(CommandHandler("stop", stop_all_tasks))
     application.add_handler(conv_handler)
     
-    await application.bot.set_my_commands([
-        BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"),
-        BotCommand("stop", "🛑 停止任务"), BotCommand("help", "❓ 帮助"),
-        BotCommand("cancel", "❌ 取消")
-    ])
-
-    logger.info("🚀 机器人已启动...");
-    await application.run_polling()
+    # **最终修复：使用健壮的 `async with` 模式来管理机器人的生命周期**
+    async with application:
+        await application.bot.set_my_commands([
+            BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"),
+            BotCommand("stop", "🛑 停止任务"), BotCommand("help", "❓ 帮助"),
+            BotCommand("cancel", "❌ 取消")
+        ])
+        logger.info("🚀 机器人已启动...")
+        await application.start()
+        await application.updater.start_polling()
+        # 优雅地等待，直到接收到终止信号
+        await asyncio.Future()
+        logger.info("机器人正在关闭...")
+        await application.updater.stop()
+        await application.stop()
+        logger.info("机器人已关闭。")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("程序被强制退出。")
