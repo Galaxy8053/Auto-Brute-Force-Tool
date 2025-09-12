@@ -302,20 +302,56 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     stop_flag = get_stop_flag_name(chat_id)
     while True:
         page_count += 1
-        if context.bot_data.get(stop_flag): termination_reason = "\n\n🌀 任务已手动停止。"; break
+        if context.bot_data.get(stop_flag):
+            termination_reason = "\n\n🌀 任务已手动停止。"
+            break
+
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,mtime"))
-        if error: termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点余额不足)" if "[820031]" in str(error) else ""); break
+        
+        if error:
+            termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点余额不足)" if "[820031]" in str(error) else "")
+            break
+
         results = data.get('results', [])
-        if not results: termination_reason = "\n\nℹ️ 已获取所有查询结果。"; break
+        if not results:
+            termination_reason = "\n\nℹ️ 已获取所有查询结果。"
+            break
+
+        original_count = len(unique_results)
         unique_results.update([r[0] for r in results])
-        try: await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮)")
-        except: pass
-        next_page_timestamp = results[-1][1]
-        if next_page_timestamp == last_page_timestamp:
-            termination_reason = "\n\n⚠️ 任务因后续结果时间戳完全相同而终止，已达数据查询边界。"
-            logger.warning("追溯时间戳未变，终止任务。"); break
+        newly_added_count = len(unique_results) - original_count
+
+        try:
+            await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮, 新增 {newly_added_count} 条)")
+        except:
+            pass
+        
+        # --- 核心修改：使用单次查询来获取最精确的时间戳 ---
+        last_host_in_batch = results[-1][0]
+        
+        # 为了效率，我们只在添加了新数据的情况下才执行此额外查询
+        if newly_added_count > 0:
+            last_host_data, _, last_host_error = await execute_query_with_fallback(
+                lambda key: fetch_fofa_data(key, f'host="{last_host_in_batch}"', 1, 1, "mtime")
+            )
+            if last_host_error or not last_host_data or not last_host_data.get('results'):
+                termination_reason = f"\n\n⚠️ 无法获取分页锚点的时间戳，任务终止。"
+                logger.warning(f"无法为 {last_host_in_batch} 获取时间戳: {last_host_error}")
+                break
+            next_page_timestamp = last_host_data['results'][0][0]
+        else:
+            # 如果没有新数据，我们使用当前批次的最后一个时间戳
+            next_page_timestamp = results[-1][1]
+
+        # 改进的终止条件：如果时间戳没有变化，并且我们没有添加任何新主机，说明我们卡住了。
+        if next_page_timestamp == last_page_timestamp and newly_added_count == 0:
+            termination_reason = "\n\n⚠️ 任务因时间戳未推进且无新数据而终止，已达数据查询边界。"
+            logger.warning("追溯时间戳未变且无新数据，终止任务。")
+            break
+            
         last_page_timestamp = next_page_timestamp
         current_query = f'({base_query}) && before="{next_page_timestamp}"'
+
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
         await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件...")
@@ -352,7 +388,6 @@ async def main() -> None:
     application.add_handler(CommandHandler("stop", stop_all_tasks))
     application.add_handler(conv_handler)
     
-    # **最终修复：使用健壮的 `async with` 模式来管理机器人的生命周期**
     async with application:
         await application.bot.set_my_commands([
             BotCommand("kkfofa", "🔍 资产搜索"), BotCommand("settings", "⚙️ 设置"),
@@ -362,7 +397,6 @@ async def main() -> None:
         logger.info("🚀 机器人已启动...")
         await application.start()
         await application.updater.start_polling()
-        # 优雅地等待，直到接收到终止信号
         await asyncio.Future()
         logger.info("机器人正在关闭...")
         await application.updater.stop()
