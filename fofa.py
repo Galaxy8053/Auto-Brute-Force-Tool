@@ -42,13 +42,13 @@ CONFIG_FILE = 'config.json'
 
 def load_config():
     default_admin_id = int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))
-    default_config = { "apis": [], "admins": [default_admin_id], "proxy": "", "full_mode": False }
+    default_config = { "apis": []， "admins": [default_admin_id]， "proxy": "", "full_mode": False }
     if not os.path.exists(CONFIG_FILE):
         save_config(default_config); return default_config
     try:
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            for key, value in default_config.items(): config.setdefault(key, value)
+            for key, value 在 default_config.items(): config.setdefault(key, value)
             save_config(config); return config
     except (json.JSONDecodeError, IOError):
         logger.error("配置文件损坏，将使用默认配置重建。")
@@ -61,7 +61,7 @@ CONFIG = load_config()
 
 def escape_markdown(text: str) -> str:
     escape_chars = '_*`['
-    return "".join(['\\' + char if char in escape_chars else char for char in text])
+    return ""。join(['\\' + char if char in escape_chars else char for char in text])
 
 def get_system_timezone_name():
     try:
@@ -76,7 +76,7 @@ def restricted(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
-        if user_id not in CONFIG.get('admins', []):
+        if user_id not 在 CONFIG.get('admins'， []):
             message = "⛔️ 抱歉，您没有权限。"
             if update.callback_query: await update.callback_query.answer(message, show_alert=True)
             else: await update.message.reply_text(message)
@@ -87,28 +87,28 @@ def restricted(func):
 HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36" }
 
 def _make_request(url: str):
-    proxies = {"http": CONFIG["proxy"], "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
+    proxies = {"http": CONFIG["proxy"]， "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
     try:
         res = requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies=proxies)
         res.raise_for_status()
         data = res.json()
-        if data.get("error"): return None, data.get("errmsg", "未知错误")
-        return data, None
-    except requests.exceptions.RequestException as e: return None, f"网络请求失败: {e}"
-    except json.JSONDecodeError: return None, "服务器返回非JSON格式。"
+        if data.get("error"): return 无, data.get("errmsg", "未知错误")
+        return data, 无
+    except requests.exceptions.RequestException as e: return 无， f"网络请求失败: {e}"
+    except json.JSONDecodeError: return 无, "服务器返回非JSON格式。"
 
 def verify_fofa_api(key):
     return _make_request(f"https://fofa.info/api/v1/info/my?key={key}")
 
 def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
-    b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
+    b64_query = base64.b64encode(query.encode('utf-8'))。decode('utf-8')
     full_param = "&full=true" if CONFIG.get("full_mode", False) else ""
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return _make_request(url)
 
-async def execute_query_with_fallback(query_func, preferred_key_index=None):
-    if not CONFIG['apis']: return None, None, "没有配置任何API Key。"
-    tasks = [asyncio.to_thread(verify_fofa_api, key) for key in CONFIG['apis']]
+async def execute_query_with_fallback(query_func, preferred_key_index=无):
+    if not CONFIG['apis']: return 无, 无, "没有配置任何API Key。"
+    tasks = [asyncio.to_thread(verify_fofa_api, key) for key 在 CONFIG['apis']]
     results = await asyncio.gather(*tasks)
     valid_keys = []
     for i, (data, error) in enumerate(results):
