@@ -97,7 +97,7 @@ async def _make_request_async(url: str):
     proxies = {"http://": CONFIG["proxy"], "https://": CONFIG["proxy"]} if CONFIG.get("proxy") else None
     loop = asyncio.get_event_loop()
     try:
-        res = await loop.run_in_executor(None, lambda: requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies=proxies))
+        res = await loop.run_in_executor(None, lambda: requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies= proxies))
         res.raise_for_status()
         data = res.json()
         if data.get("error"): return None, data.get("errmsg", "未知FOFA错误")
@@ -305,8 +305,9 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         if context.bot_data.get(stop_flag):
             termination_reason = "\n\n🌀 任务已手动停止。"
             break
-
-        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,mtime"))
+        
+        # --- 核心修正：使用官方推荐的 'lastupdatetime' 字段 ---
+        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
         
         if error:
             termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点余额不足)" if "[820031]" in str(error) else "")
@@ -318,7 +319,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             break
 
         original_count = len(unique_results)
-        unique_results.update([r[0] for r in results])
+        unique_results.update([r[0] for r in results if r]) 
         newly_added_count = len(unique_results) - original_count
 
         try:
@@ -326,28 +327,37 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        last_host_in_batch = results[-1][0]
-        
-        if newly_added_count > 0:
-            last_host_data, _, last_host_error = await execute_query_with_fallback(
-                lambda key: fetch_fofa_data(key, f'host="{last_host_in_batch}"', 1, 1, "mtime")
+        next_page_timestamp = None
+        for i in range(len(results) - 1, -1, -1):
+            if not results[i] or not results[i][0]:
+                continue
+            
+            potential_anchor_host = results[i][0]
+            
+            # --- 核心修正：使用官方推荐的 'lastupdatetime' 字段 ---
+            anchor_host_data, _, anchor_host_error = await execute_query_with_fallback(
+                lambda key: fetch_fofa_data(key, f'host="{potential_anchor_host}"', 1, 1, "lastupdatetime")
             )
             
-            # --- 核心修复：增加对返回数据结构的健壮性检查 ---
-            if (last_host_error or 
-                not last_host_data or 
-                not last_host_data.get('results') or 
-                len(last_host_data['results']) == 0 or 
-                len(last_host_data['results'][0]) == 0):
-                termination_reason = f"\n\n⚠️ 无法获取分页锚点的时间戳，任务可能不完整。"
-                logger.warning(f"无法为 {last_host_in_batch} 获取有效时间戳: {last_host_error or '结果为空'}")
-                # 降级策略：如果无法获取精确时间戳，则使用当前批次的最后一个时间戳
-                next_page_timestamp = results[-1][1]
-            else:
-                next_page_timestamp = last_host_data['results'][0][0]
-        else:
-            next_page_timestamp = results[-1][1]
+            if (not anchor_host_error and 
+                anchor_host_data and 
+                anchor_host_data.get('results') and 
+                len(anchor_host_data['results']) > 0 and 
+                len(anchor_host_data['results'][0]) > 0):
+                
+                next_page_timestamp = anchor_host_data['results'][0][0]
+                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到精确时间戳: {next_page_timestamp}")
+                break
 
+        if next_page_timestamp is None:
+            logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。")
+            if results and results[-1] and len(results[-1]) > 1:
+                next_page_timestamp = results[-1][1]
+                termination_reason = "\n\n⚠️ 警告：无法获取精确时间戳，后续结果可能不完整。"
+            else:
+                termination_reason = "\n\n❌ 错误：无法确定下一页的时间戳，任务终止。"
+                break
+        
         if next_page_timestamp == last_page_timestamp and newly_added_count == 0:
             termination_reason = "\n\n⚠️ 任务因时间戳未推进且无新数据而终止，已达数据查询边界。"
             logger.warning("追溯时间戳未变且无新数据，终止任务。")
