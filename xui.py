@@ -1003,7 +1003,6 @@ TCP_ACTIVE_GO_TEMPLATE_LINES = [
     "package main",
     "import (",
     "	\"bufio\"",
-    "	\"fmt\"",
     "	\"net\"",
     "	\"os\"",
     "	\"strings\"",
