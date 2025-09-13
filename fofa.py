@@ -436,31 +436,34 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 timestamp_str = ""
-                # --- 核心修复逻辑 ---
                 results_list = anchor_host_data.get('results', [])
                 if not results_list:
                     raise ValueError("锚点主机未返回任何结果。")
                 
                 first_item = results_list[0]
                 if isinstance(first_item, list):
-                    # 结构是 [['...']]
                     timestamp_str = first_item[0]
                 else:
-                    # 结构是 ['...']
                     timestamp_str = first_item
-                # --- 修复结束 ---
 
                 if not isinstance(timestamp_str, str) or not timestamp_str:
                      raise ValueError(f"从结果中未能提取有效的时间戳字符串。")
 
                 current_date_obj = datetime.strptime(timestamp_str.split(' ')[0], '%Y-%m-%d')
                 
+                # --- 核心修复：防回溯逻辑 ---
+                if last_page_date and current_date_obj.date() >= last_page_date:
+                    logger.warning(f"检测到时间回溯或停滞！锚点 {potential_anchor_host} 的时间 {current_date_obj.date()} 没有比上一个锚点日 {last_page_date} 更早。跳过此锚点。")
+                    continue # 忽略这个会导致时间回溯的锚点，继续寻找下一个
+                # --- 修复结束 ---
+
                 logger.info(f"锚点 {potential_anchor_host} 的有效时间戳: {timestamp_str}")
 
+                next_page_date_obj = current_date_obj
                 if last_page_date and current_date_obj.date() == last_page_date:
-                    current_date_obj -= timedelta(days=1)
+                    next_page_date_obj -= timedelta(days=1)
 
-                next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
+                next_page_date_str = next_page_date_obj.strftime('%Y-%m-%d')
                 
                 if last_page_date and next_page_date_str == last_page_date.strftime('%Y-%m-%d') and newly_added_count == 0:
                     termination_reason = "\n\n⚠️ 日期未推进且无新数据，已达查询边界。"
