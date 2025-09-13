@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import base64
-import requests
 import time
 import asyncio
 from datetime import datetime, timedelta
@@ -21,6 +20,9 @@ from telegram.ext import (
 )
 from pytz import timezone
 import tzlocal
+
+# --- 核心终极修正：导入新的、能模拟浏览器的请求库 ---
+from curl_cffi.requests import AsyncSession
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -91,25 +93,19 @@ def restricted(func):
     return wrapped
 
 # --- FOFA API 核心逻辑 ---
-# --- 核心修正: 定义一个模仿curl的、最简化的请求头 ---
-CURL_LIKE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36',
-    'Accept': '*/*',
-    'Connection': 'close', # 明确要求关闭连接，避免keep-alive带来的潜在问题
-}
-
 async def _make_request_async(url: str):
-    proxies = {"http://": CONFIG["proxy"], "https://": CONFIG["proxy"]} if CONFIG.get("proxy") else None
-    loop = asyncio.get_event_loop()
-    try:
-        # --- 核心修正: 在请求中强制使用我们定义的简化请求头 ---
-        res = await loop.run_in_executor(None, lambda: requests.get(url, headers=CURL_LIKE_HEADERS, timeout=30, verify=False, proxies=proxies))
-        res.raise_for_status()
-        data = res.json()
-        if data.get("error"): return None, data.get("errmsg", "未知FOFA错误")
-        return data, None
-    except requests.exceptions.RequestException as e: return None, f"网络请求失败: {e}"
-    except json.JSONDecodeError: return None, "服务器返回非JSON格式。"
+    proxies = {"http": CONFIG["proxy"], "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
+    # --- 核心终极修正: 使用 AsyncSession 并模拟成Chrome浏览器 ---
+    async with AsyncSession(proxies=proxies, impersonate="chrome110", verify=False) as session:
+        try:
+            res = await session.get(url, timeout=30)
+            res.raise_for_status()
+            data = res.json()
+            if data.get("error"): return None, data.get("errmsg", "未知FOFA错误")
+            return data, None
+        except Exception as e:
+            return None, f"网络请求失败: {e}"
+
 
 async def verify_fofa_api(key):
     return await _make_request_async(f"https://fofa.info/api/v1/info/my?key={key}")
@@ -140,6 +136,7 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
+# ... (后续代码与之前版本完全相同，无需改动) ...
 # --- 任务管理 ---
 def get_stop_flag_name(chat_id): return f'stop_job_{chat_id}'
 
@@ -333,6 +330,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             pass
         
         valid_anchor_found = False
+        outer_loop_break = False # Flag to break the outer while loop
         for i in range(len(results) - 1, -1, -1):
             if not results[i] or not results[i][0]:
                 continue
@@ -361,6 +359,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 if last_page_date and next_page_date_str == last_page_date.strftime('%Y-%m-%d') and newly_added_count == 0:
                     termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
                     logger.warning("追溯日期未变且无新数据，终止任务。")
+                    outer_loop_break = True
                     break
                 
                 last_page_date = current_date_obj.date()
@@ -371,9 +370,9 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             except (IndexError, TypeError, ValueError, AttributeError) as e:
                 logger.warning(f"主机 {potential_anchor_host} 作为锚点无效，原因是: {e}。正在尝试下一个...")
                 continue
-
-        if termination_reason:
-             break
+        
+        if outer_loop_break:
+            break
 
         if not valid_anchor_found:
             termination_reason = "\n\n❌ 错误：在本轮查询的所有结果中都未能找到一个有效的时间锚点，任务无法继续。"
