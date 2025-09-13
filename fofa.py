@@ -318,7 +318,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             break
 
         original_count = len(unique_results)
-        unique_results.update([r[0] for r in results if r]) 
+        unique_results.update([r[0] for r in results if r and r[0]]) 
         newly_added_count = len(unique_results) - original_count
 
         try:
@@ -326,8 +326,10 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        next_page_timestamp_str = None
+        # --- 核心修正: "偏执模式"的、绝对可靠的时间锚点查找逻辑 ---
+        valid_anchor_found = False
         for i in range(len(results) - 1, -1, -1):
+            # 基础验证，确保结果行和主机IP存在
             if not results[i] or not results[i][0]:
                 continue
             
@@ -337,43 +339,52 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 lambda key: fetch_fofa_data(key, f'host="{potential_anchor_host}"', 1, 1, "lastupdatetime")
             )
             
-            if (not anchor_host_error and 
-                anchor_host_data and 
-                anchor_host_data.get('results') and 
-                len(anchor_host_data['results']) > 0 and 
-                len(anchor_host_data['results'][0]) > 0):
+            # 增加 try-except 块进行最严格的验证
+            try:
+                # 1. 结构验证: 必须能用 [0][0] 取出值
+                timestamp_str = anchor_host_data['results'][0][0]
                 
-                # --- 核心修正：精确获取二维数组中的时间戳字符串 ---
-                next_page_timestamp_str = anchor_host_data['results'][0][0]
-                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到精确时间戳: {next_page_timestamp_str}")
-                break
+                # 2. 类型验证: 取出的值必须是字符串
+                if not isinstance(timestamp_str, str) or not timestamp_str:
+                    raise ValueError("Timestamp is not a valid string.")
 
-        if next_page_timestamp_str is None:
-            logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。")
-            if results and results[-1] and len(results[-1]) > 1:
-                next_page_timestamp_str = results[-1][1]
-                termination_reason = "\n\n⚠️ 警告：无法获取精确时间戳，后续结果可能不完整。"
-            else:
-                termination_reason = "\n\n❌ 错误：无法确定下一页的时间戳，任务终止。"
-                break
+                # 3. 格式验证: 字符串必须能被解析为日期
+                current_date_obj = datetime.strptime(timestamp_str.split(' ')[0], '%Y-%m-%d')
+                
+                # 如果三道关全部通过，我们找到了一个完美的锚点
+                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到有效时间戳: {timestamp_str}")
 
-        # --- 核心修正：处理日期并为下一次查询做准备 ---
-        # 1. 将时间戳字符串转换为datetime对象
-        current_date_obj = datetime.strptime(next_page_timestamp_str.split(' ')[0], '%Y-%m-%d')
-        
-        # 2. 如果当前日期与上一轮相同，则将查询日期减一天，以避免重复查询和死循环
-        if last_page_date and current_date_obj.date() == last_page_date:
-             current_date_obj -= timedelta(days=1)
-        
-        next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
-        
-        if next_page_date_str == last_page_date and newly_added_count == 0:
-            termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
-            logger.warning("追溯日期未变且无新数据，终止任务。")
+                # 智能分页逻辑：如果日期与上一轮相同，则将查询日期减一天
+                if last_page_date and current_date_obj.date() == last_page_date:
+                    current_date_obj -= timedelta(days=1)
+
+                next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
+                
+                # 检查是否真的取得了进展
+                if next_page_date_str == last_page_date and newly_added_count == 0:
+                    termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
+                    logger.warning("追溯日期未变且无新数据，终止任务。")
+                    # 使用 break outer_loop 来跳出外层 while 循环
+                    break
+                
+                last_page_date = current_date_obj.date()
+                current_query = f'({base_query}) && before="{next_page_date_str}"'
+                valid_anchor_found = True
+                break # 成功找到锚点，跳出 for 循环
+
+            except (IndexError, TypeError, ValueError, AttributeError) as e:
+                # 任何验证失败，都会进入这里
+                logger.warning(f"主机 {potential_anchor_host} 作为锚点无效，原因是: {e}。正在尝试下一个...")
+                continue # 继续 for 循环，尝试前一个主机
+
+        if termination_reason: # 如果在循环内部设置了终止原因，则跳出主循环
+             break
+
+        # 如果遍历完整个批次都找不到一个有效的锚点
+        if not valid_anchor_found:
+            termination_reason = "\n\n❌ 错误：在本轮查询的所有结果中都未能找到一个有效的时间锚点，任务无法继续。"
+            logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。任务终止。")
             break
-            
-        last_page_date = current_date_obj.date()
-        current_query = f'({base_query}) && before="{next_page_date_str}"'
 
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
