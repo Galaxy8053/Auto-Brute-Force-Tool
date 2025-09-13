@@ -78,14 +78,12 @@ def restricted(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-# --- FOFA API 核心逻辑 ---
-# --- 终极修正：使用 asyncio 直接调用系统内的 curl 命令 ---
+# --- FOFA API 核心逻辑 (调试修改版) ---
 async def _make_request_async(url: str):
     proxy_str = ""
     if CONFIG.get("proxy"):
         proxy_str = f'--proxy "{CONFIG["proxy"]}"'
     
-    # -s: silent mode, -L: follow redirects, -k: insecure (to match verify=False)
     command = f'curl -s -L -k {proxy_str} "{url}"'
     
     try:
@@ -99,45 +97,49 @@ async def _make_request_async(url: str):
         if proc.returncode != 0:
             error_msg = stderr.decode().strip()
             logger.error(f"curl command failed: {error_msg}")
-            return None, f"网络请求失败 (curl): {error_msg}"
+            # 返回命令和空响应以供调试
+            return None, f"网络请求失败 (curl): {error_msg}", command, ""
 
         response_text = stdout.decode()
         if not response_text:
-            return None, "API 返回了空响应。"
+            return None, "API 返回了空响应。", command, response_text
             
         data = json.loads(response_text)
 
         if data.get("error"):
-            return None, data.get("errmsg", "未知的FOFA错误")
+            return None, data.get("errmsg", "未知的FOFA错误"), command, response_text
         
-        return data, None
+        # 成功时也返回命令和原始响应
+        return data, None, command, response_text
 
     except json.JSONDecodeError:
-        return None, f"解析JSON响应失败: {response_text[:200]}"
+        return None, f"解析JSON响应失败: {response_text[:200]}", command, response_text
     except Exception as e:
-        return None, f"执行curl时发生意外错误: {e}"
+        return None, f"执行curl时发生意外错误: {e}", command, ""
 
 
 async def verify_fofa_api(key):
-    # 验证API时不再需要email参数
     url = f"https://fofa.info/api/v1/info/my?key={key}"
-    return await _make_request_async(url)
+    # 忽略verify_fofa_api的调试信息
+    data, error, _, _ = await _make_request_async(url)
+    return data, error
+
 
 async def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
     full_param = "&full=true" if CONFIG.get("full_mode", False) else ""
-    # 同样，查询数据时也移除了email参数
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return await _make_request_async(url)
 
+
 async def execute_query_with_fallback(query_func, preferred_key_index=None):
-    if not CONFIG['apis']: return None, None, "没有配置任何API Key。"
+    if not CONFIG['apis']: return None, None, "没有配置任何API Key。", None, None
     
     tasks = [verify_fofa_api(key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
     
     valid_keys = [{'key': CONFIG['apis'][i], 'index': i + 1, 'is_vip': data.get('is_vip', False)} for i, (data, error) in enumerate(results) if not error and data]
-    if not valid_keys: return None, None, "所有API Key均无效或验证失败。"
+    if not valid_keys: return None, None, "所有API Key均无效或验证失败。", None, None
     
     prioritized_keys = sorted(valid_keys, key=lambda x: x['is_vip'], reverse=True)
     keys_to_try = prioritized_keys
@@ -146,17 +148,19 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         if start_index != -1: keys_to_try = prioritized_keys[start_index:] + prioritized_keys[:start_index]
     
     last_error = "没有可用的API Key。"
+    last_command, last_response_text = None, None
     for key_info in keys_to_try:
-        data, error = await query_func(key_info['key'])
-        if not error: return data, key_info['index'], None
+        data, error, command, response_text = await query_func(key_info['key'])
+        last_command, last_response_text = command, response_text
+        if not error: return data, key_info['index'], None, command, response_text
         last_error = error
         if "[820031]" in str(error):
             logger.warning(f"Key [#{key_info['index']}] F点余额不足，尝试下一个...")
             continue
-        return None, key_info['index'], error
-    return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
+        return None, key_info['index'], error, command, response_text
+    return None, None, f"所有Key均尝试失败，最后错误: {last_error}", last_command, last_response_text
 
-# ... (后续所有代码与之前版本完全相同，无需改动) ...
+# ... 基础命令处理部分 (start, help, settings等) 保持不变 ...
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
@@ -197,7 +201,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     msg = await update.message.reply_text("🔄 正在查询...")
-    data, used_key_index, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, 1, 1, "host"), key_index)
+    data, used_key_index, error, _, _ = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, 1, 1, "host"), key_index)
     
     if error:
         await msg.edit_text(f"❌ 查询出错: {error}")
@@ -375,7 +379,7 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"下载进度: {len(unique_results)}/{total_size} (Page {page}/{pages_to_fetch})...")
         except Exception:
             pass
-        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, page, 10000, "host"))
+        data, _, error, _, _ = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, page, 10000, "host"))
         if error:
             await msg.edit_text(f"❌ 第 {page} 页下载出错: {error}")
             break
@@ -407,7 +411,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             termination_reason = "\n\n🌀 任务已手动停止。"
             break
         
-        data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
+        data, _, error, _, _ = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
         
         if error:
             termination_reason = f"\n\n❌ 第 {page_count} 轮出错: {error}"
@@ -435,14 +439,47 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             
             potential_anchor_host = results[i][0]
             
-            anchor_host_data, _, anchor_host_error = await execute_query_with_fallback(
+            # --- 关键修改：捕获此查询的全部返回信息 ---
+            anchor_host_data, _, anchor_host_error, failing_command, raw_response = await execute_query_with_fallback(
                 lambda key: fetch_fofa_data(key, f'host="{potential_anchor_host}"', 1, 1, "lastupdatetime")
             )
             
             try:
-                timestamp_str = anchor_host_data['results'][0][0]
-                if not isinstance(timestamp_str, str) or not timestamp_str:
-                    raise ValueError("Timestamp is not a valid string.")
+                # 即使出错也要尝试提取，以进行判断
+                timestamp_str = ""
+                if anchor_host_data and anchor_host_data.get('results') and anchor_host_data['results'][0]:
+                    timestamp_str = anchor_host_data['results'][0][0]
+
+                # --- 核心调试逻辑：检查时间戳是否是异常值 ---
+                if not isinstance(timestamp_str, str) or '-' not in timestamp_str:
+                    # 捕获到异常！发送证据并中止
+                    proof_message = (
+                        "🕵️‍♂️ **异常API响应捕获！** 🕵️‍♂️\n\n"
+                        "脚本在尝试获取单个主机的时间戳时，收到了一个非标准的日期格式。这很可能就是导致之前问题的根源。\n\n"
+                        f"**- 目标主机:**\n`{potential_anchor_host}`\n\n"
+                        "**- 执行的Curl命令:**\n"
+                        "```\n"
+                        f"{failing_command}\n"
+                        "```\n\n"
+                        "**- FOFA返回的原始JSON:**\n"
+                        "```json\n"
+                        f"{raw_response}\n"
+                        "```\n\n"
+                        "请将此命令复制到您的服务器上直接运行，以验证返回结果是否一致。下载任务已因此中止。"
+                    )
+                    
+                    try:
+                        await bot.send_message(chat_id, proof_message, parse_mode=ParseMode.MARKDOWN)
+                    except Exception as e:
+                        logger.error(f"发送证据消息失败: {e}")
+                        # 尝试发送纯文本版本
+                        await bot.send_message(chat_id, f"捕获到异常！\n主机: {potential_anchor_host}\n命令: {failing_command}\n响应: {raw_response}")
+
+                    termination_reason = "\n\n⚠️ 检测到异常API响应，任务中止。"
+                    outer_loop_break = True
+                    break # 中断内层 for 循环
+
+                # 如果一切正常，继续执行原来的逻辑
                 current_date_obj = datetime.strptime(timestamp_str.split(' ')[0], '%Y-%m-%d')
                 
                 logger.info(f"锚点 {potential_anchor_host} 的有效时间戳: {timestamp_str}")
@@ -461,7 +498,8 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 current_query = f'({base_query}) && before="{next_page_date_str}"'
                 valid_anchor_found = True
                 break
-            except (IndexError, TypeError, ValueError, AttributeError) as e:
+            except Exception as e:
+                # 保持原来的错误处理逻辑，以防其他问题
                 logger.warning(f"主机 {potential_anchor_host} 作为锚点无效: {e}。尝试下一个...")
                 continue
         
@@ -473,14 +511,17 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"第 {page_count} 轮中所有结果均无法作为锚点。")
             break
 
+    final_message = f"任务完成。共找到 {len(unique_results)} 条有效结果。{termination_reason}"
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
-        await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件...")
+        final_message += "\n正在发送文件..."
+        await msg.edit_text(final_message)
         with open(output_filename, 'rb') as doc: await bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
     else:
-        await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
+        await msg.edit_text(final_message)
     context.bot_data.pop(stop_flag, None)
+
 
 async def main() -> None:
     try:
@@ -526,4 +567,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("程序被强制退出。")
-
