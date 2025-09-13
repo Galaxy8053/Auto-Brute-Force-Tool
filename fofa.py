@@ -91,13 +91,19 @@ def restricted(func):
     return wrapped
 
 # --- FOFA API 核心逻辑 ---
-HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36" }
+# --- 核心修正: 定义一个模仿curl的、最简化的请求头 ---
+CURL_LIKE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93 Safari/536.36',
+    'Accept': '*/*',
+    'Connection': 'close', # 明确要求关闭连接，避免keep-alive带来的潜在问题
+}
 
 async def _make_request_async(url: str):
     proxies = {"http://": CONFIG["proxy"], "https://": CONFIG["proxy"]} if CONFIG.get("proxy") else None
     loop = asyncio.get_event_loop()
     try:
-        res = await loop.run_in_executor(None, lambda: requests.get(url, headers=HEADERS, timeout=30, verify=False, proxies= proxies))
+        # --- 核心修正: 在请求中强制使用我们定义的简化请求头 ---
+        res = await loop.run_in_executor(None, lambda: requests.get(url, headers=CURL_LIKE_HEADERS, timeout=30, verify=False, proxies=proxies))
         res.raise_for_status()
         data = res.json()
         if data.get("error"): return None, data.get("errmsg", "未知FOFA错误")
@@ -326,10 +332,8 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # --- 核心修正: "偏执模式"的、绝对可靠的时间锚点查找逻辑 ---
         valid_anchor_found = False
         for i in range(len(results) - 1, -1, -1):
-            # 基础验证，确保结果行和主机IP存在
             if not results[i] or not results[i][0]:
                 continue
             
@@ -339,48 +343,38 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 lambda key: fetch_fofa_data(key, f'host="{potential_anchor_host}"', 1, 1, "lastupdatetime")
             )
             
-            # 增加 try-except 块进行最严格的验证
             try:
-                # 1. 结构验证: 必须能用 [0][0] 取出值
                 timestamp_str = anchor_host_data['results'][0][0]
                 
-                # 2. 类型验证: 取出的值必须是字符串
                 if not isinstance(timestamp_str, str) or not timestamp_str:
                     raise ValueError("Timestamp is not a valid string.")
 
-                # 3. 格式验证: 字符串必须能被解析为日期
                 current_date_obj = datetime.strptime(timestamp_str.split(' ')[0], '%Y-%m-%d')
                 
-                # 如果三道关全部通过，我们找到了一个完美的锚点
                 logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到有效时间戳: {timestamp_str}")
 
-                # 智能分页逻辑：如果日期与上一轮相同，则将查询日期减一天
                 if last_page_date and current_date_obj.date() == last_page_date:
                     current_date_obj -= timedelta(days=1)
 
                 next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
                 
-                # 检查是否真的取得了进展
-                if next_page_date_str == last_page_date and newly_added_count == 0:
+                if last_page_date and next_page_date_str == last_page_date.strftime('%Y-%m-%d') and newly_added_count == 0:
                     termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
                     logger.warning("追溯日期未变且无新数据，终止任务。")
-                    # 使用 break outer_loop 来跳出外层 while 循环
                     break
                 
                 last_page_date = current_date_obj.date()
                 current_query = f'({base_query}) && before="{next_page_date_str}"'
                 valid_anchor_found = True
-                break # 成功找到锚点，跳出 for 循环
+                break
 
             except (IndexError, TypeError, ValueError, AttributeError) as e:
-                # 任何验证失败，都会进入这里
                 logger.warning(f"主机 {potential_anchor_host} 作为锚点无效，原因是: {e}。正在尝试下一个...")
-                continue # 继续 for 循环，尝试前一个主机
+                continue
 
-        if termination_reason: # 如果在循环内部设置了终止原因，则跳出主循环
+        if termination_reason:
              break
 
-        # 如果遍历完整个批次都找不到一个有效的锚点
         if not valid_anchor_found:
             termination_reason = "\n\n❌ 错误：在本轮查询的所有结果中都未能找到一个有效的时间锚点，任务无法继续。"
             logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。任务终止。")
