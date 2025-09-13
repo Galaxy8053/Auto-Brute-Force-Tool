@@ -21,9 +21,6 @@ from telegram.ext import (
 from pytz import timezone
 import tzlocal
 
-# --- 核心终极修正：导入新的、能模拟浏览器的请求库 ---
-from curl_cffi.requests import AsyncSession
-
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -70,88 +67,107 @@ def escape_markdown(text: str) -> str:
     escape_chars = '_*`[]()~>#+-=|{}.!'
     return "".join(['\\' + char if char in escape_chars else char for char in text])
 
-def get_system_timezone_name():
-    try:
-        tz_name = tzlocal.get_localzone_name()
-        timezone(tz_name)
-        return tz_name
-    except Exception as e:
-        logger.warning(f"无法自动检测时区: {e}。将默认使用 UTC。")
-        return 'UTC'
-
 # --- 装饰器 ---
 def restricted(func):
     @wraps(func)
     async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id not in CONFIG.get('admins', []):
-            message = "⛔️ 抱歉，您没有权限。"
-            if update.callback_query: await update.callback_query.answer(message, show_alert=True)
-            else: await update.message.reply_text(message)
+            await update.message.reply_text("⛔️ 抱歉，您没有权限。")
             return ConversationHandler.END
         return await func(update, context, *args, **kwargs)
     return wrapped
 
 # --- FOFA API 核心逻辑 ---
+# --- 终极修正：使用 asyncio 直接调用系统内的 curl 命令 ---
 async def _make_request_async(url: str):
-    proxies = {"http": CONFIG["proxy"], "https": CONFIG["proxy"]} if CONFIG.get("proxy") else None
-    # --- 核心终极修正: 使用 AsyncSession 并模拟成Chrome浏览器 ---
-    async with AsyncSession(proxies=proxies, impersonate="chrome110", verify=False) as session:
-        try:
-            res = await session.get(url, timeout=30)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("error"): return None, data.get("errmsg", "未知FOFA错误")
-            return data, None
-        except Exception as e:
-            return None, f"网络请求失败: {e}"
+    proxy_str = ""
+    if CONFIG.get("proxy"):
+        proxy_str = f'--proxy "{CONFIG["proxy"]}"'
+    
+    # -s: silent mode, -L: follow redirects, -k: insecure (to match verify=False)
+    command = f'curl -s -L -k {proxy_str} "{url}"'
+    
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE)
+
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode().strip()
+            logger.error(f"curl command failed: {error_msg}")
+            return None, f"网络请求失败 (curl): {error_msg}"
+
+        response_text = stdout.decode()
+        if not response_text:
+            return None, "API 返回了空响应。"
+            
+        data = json.loads(response_text)
+
+        if data.get("error"):
+            return None, data.get("errmsg", "未知的FOFA错误")
+        
+        return data, None
+
+    except json.JSONDecodeError:
+        return None, f"解析JSON响应失败: {response_text[:200]}"
+    except Exception as e:
+        return None, f"执行curl时发生意外错误: {e}"
 
 
 async def verify_fofa_api(key):
-    return await _make_request_async(f"https://fofa.info/api/v1/info/my?key={key}")
+    # 验证API时不再需要email参数
+    url = f"https://fofa.info/api/v1/info/my?key={key}"
+    return await _make_request_async(url)
 
 async def fetch_fofa_data(key, query, page=1, page_size=10000, fields="host"):
     b64_query = base64.b64encode(query.encode('utf-8')).decode('utf-8')
     full_param = "&full=true" if CONFIG.get("full_mode", False) else ""
+    # 同样，查询数据时也移除了email参数
     url = f"https://fofa.info/api/v1/search/all?key={key}&qbase64={b64_query}&size={page_size}&page={page}&fields={fields}{full_param}"
     return await _make_request_async(url)
 
 async def execute_query_with_fallback(query_func, preferred_key_index=None):
     if not CONFIG['apis']: return None, None, "没有配置任何API Key。"
+    
     tasks = [verify_fofa_api(key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
+    
     valid_keys = [{'key': CONFIG['apis'][i], 'index': i + 1, 'is_vip': data.get('is_vip', False)} for i, (data, error) in enumerate(results) if not error and data]
-    if not valid_keys: return None, None, "所有API Key均无效或验证失败"
+    if not valid_keys: return None, None, "所有API Key均无效或验证失败。"
+    
     prioritized_keys = sorted(valid_keys, key=lambda x: x['is_vip'], reverse=True)
     keys_to_try = prioritized_keys
     if preferred_key_index is not None:
         start_index = next((i for i, k in enumerate(prioritized_keys) if k['index'] == preferred_key_index), -1)
         if start_index != -1: keys_to_try = prioritized_keys[start_index:] + prioritized_keys[:start_index]
+    
     last_error = "没有可用的API Key。"
     for key_info in keys_to_try:
         data, error = await query_func(key_info['key'])
         if not error: return data, key_info['index'], None
         last_error = error
-        if "[820031]" in str(error): logger.warning(f"Key [#{key_info['index']}] F点余额不足，尝试下一个..."); continue
+        if "[820031]" in str(error):
+            logger.warning(f"Key [#{key_info['index']}] F点余额不足，尝试下一个...")
+            continue
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# ... (后续代码与之前版本完全相同，无需改动) ...
-# --- 任务管理 ---
-def get_stop_flag_name(chat_id): return f'stop_job_{chat_id}'
-
-async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.bot_data[get_stop_flag_name(update.effective_chat.id)] = True
-    await update.message.reply_text("✅ 已发送停止信号。后台任务将在当前循环结束后停止。")
-
+# ... (后续所有代码与之前版本完全相同，无需改动) ...
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data['chat_id']
     job_name = f"download_job_{chat_id}"
     for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
-    context.bot_data.pop(get_stop_flag_name(chat_id), None)
+    context.bot_data.pop(f'stop_job_{chat_id}', None)
     context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
+    
+async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.bot_data[f'stop_job_{update.effective_chat.id}'] = True
+    await update.message.reply_text("✅ 已发送停止信号。后台任务将在当前循环结束后停止。")
 
-# --- 普通命令处理器 ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('👋 欢迎使用 Fofa 查询机器人！请使用 /help 查看命令手册。')
     if update.effective_user.id not in CONFIG.get('admins', []):
@@ -163,24 +179,38 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = "📖 *Fofa 机器人指令手册*\n\n*🔍 资产查询*\n`/kkfofa [key编号] <查询语句>`\n\n*⚙️ 管理与设置*\n`/settings`\n\n*🛑 停止任务*\n`/stop`\n\n*❌ 取消操作*\n`/cancel`"
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
-# --- 对话处理器 ---
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    if not args: await update.message.reply_text("用法: `/kkfofa [key编号] <查询语句>`"); return ConversationHandler.END
-    key_index, query_text = None, ""
+    if not args:
+        await update.message.reply_text("用法: `/kkfofa [key编号] <查询语句>`")
+        return ConversationHandler.END
+    
+    key_index, query_text = None, " ".join(args)
     try:
-        key_index = int(args[0]);
-        if not (1 <= key_index <= len(CONFIG['apis'])) or len(args) < 2: await update.message.reply_text(f"❌ Key编号无效或缺少查询语句。"); return ConversationHandler.END
+        key_index = int(args[0])
+        if not (1 <= key_index <= len(CONFIG['apis'])):
+             await update.message.reply_text(f"❌ Key编号无效。")
+             return ConversationHandler.END
         query_text = " ".join(args[1:])
-    except (ValueError, IndexError): query_text = " ".join(args)
+    except (ValueError, IndexError):
+        pass
+
     msg = await update.message.reply_text("🔄 正在查询...")
     data, used_key_index, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, 1, 1, "host"), key_index)
-    if error: await msg.edit_text(f"❌ 查询出错: {error}"); return ConversationHandler.END
+    
+    if error:
+        await msg.edit_text(f"❌ 查询出错: {error}")
+        return ConversationHandler.END
+    
     total_size = data.get('size', 0)
-    if total_size == 0: await msg.edit_text("🤷‍♀️ 未找到结果。"); return ConversationHandler.END
+    if total_size == 0:
+        await msg.edit_text("🤷‍♀️ 未找到结果。")
+        return ConversationHandler.END
+
     context.user_data.update({'query': query_text, 'total_size': total_size, 'chat_id': update.effective_chat.id})
     success_message = f"✅ 使用 Key [#{used_key_index}] 找到 {total_size} 条结果。"
+    
     if total_size <= 10000:
         await msg.edit_text(f"{success_message}\n开始下载...")
         await start_download_job(context, run_full_download_query, context.user_data)
@@ -191,37 +221,61 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_KKFOFA_MODE
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); mode = query.data.split('_')[1]
+    query = update.callback_query
+    await query.answer()
+    mode = query.data.split('_')[1]
     job_data = context.user_data
-    if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, job_data)
-    elif mode == 'traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, job_data)
-    elif mode == 'cancel': await query.edit_message_text("操作已取消。")
+    if mode == 'full':
+        await query.edit_message_text(f"⏳ 开始全量下载任务...")
+        await start_download_job(context, run_full_download_query, job_data)
+    elif mode == 'traceback':
+        await query.edit_message_text(f"⏳ 开始深度追溯下载任务...")
+        await start_download_job(context, run_traceback_download_query, job_data)
+    elif mode == 'cancel':
+        await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
 @restricted
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔑 API 管理", callback_data='settings_api')], [InlineKeyboardButton("🌐 代理设置", callback_data='settings_proxy')]]
-    message_text = "⚙️ *设置菜单*";
-    if update.callback_query: await update.callback_query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-    else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    message_text = "⚙️ *设置菜单*"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); menu = query.data.split('_')[1]
-    if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
-    elif menu == 'proxy': await show_proxy_menu(update, context); return STATE_SETTINGS_ACTION
+    query = update.callback_query
+    await query.answer()
+    menu = query.data.split('_')[1]
+    if menu == 'api':
+        await show_api_menu(update, context)
+        return STATE_SETTINGS_ACTION
+    elif menu == 'proxy':
+        await show_proxy_menu(update, context)
+        return STATE_SETTINGS_ACTION
 
 async def show_api_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)("🔄 正在查询API Key状态...")
+    
     tasks = [verify_fofa_api(key) for key in CONFIG['apis']]
     results = await asyncio.gather(*tasks)
     api_details = []
     for i, (data, error) in enumerate(results):
-        key_masked = f"`{CONFIG['apis'][i][:4]}...{CONFIG['apis'][i][-4:]}`"; status = f"❌ 无效或出错: {error}"
-        if not error and data: status = f"({escape_markdown(data.get('username', 'N/A'))}, {'✅ VIP' if data.get('is_vip') else '👤 普通'}, F币: {data.get('fcoin', 0)})"
+        key_masked = f"`{CONFIG['apis'][i][:4]}...{CONFIG['apis'][i][-4:]}`"
+        status = f"❌ 无效或出错: {error}"
+        if not error and data:
+            status = f"({escape_markdown(data.get('username', 'N/A'))}, {'✅ VIP' if data.get('is_vip') else '👤 普通'}, F币: {data.get('fcoin', 0)})"
         api_details.append(f"{i+1}. {key_masked} {status}")
+    
     api_message = "\n".join(api_details) if api_details else "目前没有存储任何API密钥。"
-    keyboard = [[InlineKeyboardButton(f"时间范围: {'✅ 查询所有历史' if CONFIG.get('full_mode') else '⏳ 仅查近一年'}", callback_data='action_toggle_full')], [InlineKeyboardButton("➕ 添加", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除", callback_data='action_remove_api')], [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]]
+    
+    keyboard = [
+        [InlineKeyboardButton(f"时间范围: {'✅ 查询所有历史' if CONFIG.get('full_mode') else '⏳ 仅查近一年'}", callback_data='action_toggle_full')],
+        [InlineKeyboardButton("➕ 添加Key", callback_data='action_add_api'), InlineKeyboardButton("➖ 删除Key", callback_data='action_remove_api')],
+        [InlineKeyboardButton("🔙 返回主菜单", callback_data='action_back_main')]
+    ]
     await msg.edit_text(f"🔑 *API 管理*\n\n{api_message}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
 async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,29 +283,57 @@ async def show_proxy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(f"🌐 *代理设置*\n当前: `{CONFIG.get('proxy') or '未设置'}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
 async def settings_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); action = query.data.split('_', 1)[1]
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split('_', 1)[1]
+    
     if action == 'back_main': return await settings_command(update, context)
-    elif action == 'toggle_full': CONFIG["full_mode"] = not CONFIG.get("full_mode", False); save_config(CONFIG); await show_api_menu(update, context); return STATE_SETTINGS_ACTION
-    elif action == 'add_api': await query.edit_message_text("请发送您的 Fofa API Key。"); return STATE_GET_KEY
+    elif action == 'toggle_full':
+        CONFIG["full_mode"] = not CONFIG.get("full_mode", False)
+        save_config(CONFIG)
+        await show_api_menu(update, context)
+        return STATE_SETTINGS_ACTION
+    elif action == 'add_api':
+        await query.edit_message_text("请发送您的 Fofa API Key。")
+        return STATE_GET_KEY
     elif action == 'remove_api':
-        if not CONFIG['apis']: await query.message.reply_text("没有可删除的API Key。"); await show_api_menu(update, context); return STATE_SETTINGS_ACTION
-        await query.edit_message_text("请回复要删除的API Key编号。"); return STATE_REMOVE_API
-    elif action == 'set_proxy': await query.edit_message_text("请输入代理地址。"); return STATE_GET_PROXY
-    elif action == 'delete_proxy': CONFIG['proxy'] = ""; save_config(CONFIG); await query.edit_message_text("✅ 代理已清除。"); await asyncio.sleep(1); return await settings_command(update, context)
+        if not CONFIG['apis']:
+            await query.message.reply_text("没有可删除的API Key。")
+            await show_api_menu(update, context)
+            return STATE_SETTINGS_ACTION
+        await query.edit_message_text("请回复要删除的API Key编号。")
+        return STATE_REMOVE_API
+    elif action == 'set_proxy':
+        await query.edit_message_text("请输入代理地址。")
+        return STATE_GET_PROXY
+    elif action == 'delete_proxy':
+        CONFIG['proxy'] = ""
+        save_config(CONFIG)
+        await query.edit_message_text("✅ 代理已清除。")
+        await asyncio.sleep(1)
+        return await settings_command(update, context)
 
 async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    key = update.message.text.strip(); msg = await update.message.reply_text("正在验证...")
+    key = update.message.text.strip()
+    msg = await update.message.reply_text("正在验证...")
     data, error = await verify_fofa_api(key)
     if not error and data:
-        if key not in CONFIG['apis']: CONFIG['apis'].append(key); save_config(CONFIG); await msg.edit_text(f"✅ 添加成功！你好, {escape_markdown(data.get('username', 'user'))}!", parse_mode=ParseMode.MARKDOWN)
-        else: await msg.edit_text(f"ℹ️ 该Key已存在。")
-    else: await msg.edit_text(f"❌ 验证失败: {error}")
-    await asyncio.sleep(2); await msg.delete()
+        if key not in CONFIG['apis']:
+            CONFIG['apis'].append(key)
+            save_config(CONFIG)
+            await msg.edit_text(f"✅ 添加成功！你好, {escape_markdown(data.get('username', 'user'))}!", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await msg.edit_text(f"ℹ️ 该Key已存在。")
+    else:
+        await msg.edit_text(f"❌ 验证失败: {error}")
+    await asyncio.sleep(2)
+    await msg.delete()
     await show_api_menu(update, context)
     return STATE_SETTINGS_ACTION
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CONFIG['proxy'] = update.message.text.strip(); save_config(CONFIG)
+    CONFIG['proxy'] = update.message.text.strip()
+    save_config(CONFIG)
     await update.message.reply_text(f"✅ 代理已更新。")
     await asyncio.sleep(1)
     await update.message.reply_text("请重新输入 /settings 进入设置菜单。")
@@ -260,39 +342,54 @@ async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def remove_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         index = int(update.message.text) - 1
-        if 0 <= index < len(CONFIG['apis']): CONFIG['apis'].pop(index); save_config(CONFIG); await update.message.reply_text(f"✅ 已删除。")
-        else: await update.message.reply_text("❌ 无效编号。")
-    except (ValueError, IndexError): await update.message.reply_text("❌ 请输入数字。")
+        if 0 <= index < len(CONFIG['apis']):
+            CONFIG['apis'].pop(index)
+            save_config(CONFIG)
+            await update.message.reply_text(f"✅ 已删除。")
+        else:
+            await update.message.reply_text("❌ 无效编号。")
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ 请输入数字。")
     await asyncio.sleep(1)
     await show_api_menu(update, context)
     return STATE_SETTINGS_ACTION
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query: await update.callback_query.edit_message_text('操作已取消。')
-    else: await update.message.reply_text('操作已取消。')
-    context.user_data.clear(); return ConversationHandler.END
+    await update.message.reply_text('操作已取消。')
+    context.user_data.clear()
+    return ConversationHandler.END
 
-# --- 后台任务 ---
 async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data; bot = context.bot
     chat_id, query_text, total_size = job_data['chat_id'], job_data['query'], job_data['total_size']
-    output_filename = f"fofa_full_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"; unique_results = set()
-    msg = await bot.send_message(chat_id, "⏳ 开始全量下载任务..."); pages_to_fetch = (total_size + 9999) // 10000
-    stop_flag = get_stop_flag_name(chat_id)
+    output_filename = f"fofa_full_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+    unique_results = set()
+    msg = await bot.send_message(chat_id, "⏳ 开始全量下载任务...")
+    pages_to_fetch = (total_size + 9999) // 10000
+    stop_flag = f'stop_job_{chat_id}'
     for page in range(1, pages_to_fetch + 1):
-        if context.bot_data.get(stop_flag): await msg.edit_text("🌀 下载任务已手动停止."); break
-        try: await msg.edit_text(f"下载进度: {len(unique_results)}/{total_size} (Page {page}/{pages_to_fetch})...")
-        except: pass
+        if context.bot_data.get(stop_flag):
+            await msg.edit_text("🌀 下载任务已手动停止.")
+            break
+        try:
+            await msg.edit_text(f"下载进度: {len(unique_results)}/{total_size} (Page {page}/{pages_to_fetch})...")
+        except Exception:
+            pass
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, query_text, page, 10000, "host"))
-        if error: await msg.edit_text(f"❌ 第 {page} 页下载出错: {error}" + ("\n\n任务已因F点余额不足而终止。" if "[820031]" in str(error) else "")); break
-        if not data.get('results'): break
+        if error:
+            await msg.edit_text(f"❌ 第 {page} 页下载出错: {error}")
+            break
+        if not data.get('results'):
+            break
         unique_results.update(data.get('results', []))
+    
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(unique_results))
         await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。正在发送...")
         with open(output_filename, 'rb') as doc: await bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    elif not context.bot_data.get(stop_flag): await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
+    elif not context.bot_data.get(stop_flag):
+        await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
     context.bot_data.pop(stop_flag, None)
 
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
@@ -302,7 +399,8 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     unique_results, page_count, last_page_date, termination_reason = set(), 0, None, ""
     msg = await bot.send_message(chat_id, "⏳ 开始深度追溯下载...")
     current_query = base_query
-    stop_flag = get_stop_flag_name(chat_id)
+    stop_flag = f'stop_job_{chat_id}'
+
     while True:
         page_count += 1
         if context.bot_data.get(stop_flag):
@@ -312,7 +410,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
         
         if error:
-            termination_reason = f"\n\n❌ 在第 {page_count} 轮追溯时出错: {error}" + (" (F点余额不足)" if "[820031]" in str(error) else "")
+            termination_reason = f"\n\n❌ 第 {page_count} 轮出错: {error}"
             break
 
         results = data.get('results', [])
@@ -325,12 +423,12 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         newly_added_count = len(unique_results) - original_count
 
         try:
-            await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条独立结果... (第 {page_count} 轮, 新增 {newly_added_count} 条)")
-        except:
+            await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条... (第 {page_count} 轮, 新增 {newly_added_count})")
+        except Exception:
             pass
         
         valid_anchor_found = False
-        outer_loop_break = False # Flag to break the outer while loop
+        outer_loop_break = False
         for i in range(len(results) - 1, -1, -1):
             if not results[i] or not results[i][0]:
                 continue
@@ -343,13 +441,11 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 timestamp_str = anchor_host_data['results'][0][0]
-                
                 if not isinstance(timestamp_str, str) or not timestamp_str:
                     raise ValueError("Timestamp is not a valid string.")
-
                 current_date_obj = datetime.strptime(timestamp_str.split(' ')[0], '%Y-%m-%d')
                 
-                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到有效时间戳: {timestamp_str}")
+                logger.info(f"锚点 {potential_anchor_host} 的有效时间戳: {timestamp_str}")
 
                 if last_page_date and current_date_obj.date() == last_page_date:
                     current_date_obj -= timedelta(days=1)
@@ -357,8 +453,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
                 
                 if last_page_date and next_page_date_str == last_page_date.strftime('%Y-%m-%d') and newly_added_count == 0:
-                    termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
-                    logger.warning("追溯日期未变且无新数据，终止任务。")
+                    termination_reason = "\n\n⚠️ 日期未推进且无新数据，已达查询边界。"
                     outer_loop_break = True
                     break
                 
@@ -366,17 +461,16 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 current_query = f'({base_query}) && before="{next_page_date_str}"'
                 valid_anchor_found = True
                 break
-
             except (IndexError, TypeError, ValueError, AttributeError) as e:
-                logger.warning(f"主机 {potential_anchor_host} 作为锚点无效，原因是: {e}。正在尝试下一个...")
+                logger.warning(f"主机 {potential_anchor_host} 作为锚点无效: {e}。尝试下一个...")
                 continue
         
         if outer_loop_break:
             break
 
         if not valid_anchor_found:
-            termination_reason = "\n\n❌ 错误：在本轮查询的所有结果中都未能找到一个有效的时间锚点，任务无法继续。"
-            logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。任务终止。")
+            termination_reason = "\n\n❌ 错误：无法找到有效的时间锚点以继续。"
+            logger.error(f"第 {page_count} 轮中所有结果均无法作为锚点。")
             break
 
     if unique_results:
@@ -384,16 +478,17 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件...")
         with open(output_filename, 'rb') as doc: await bot.send_document(chat_id, document=doc)
         os.remove(output_filename)
-    else: await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
+    else:
+        await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
     context.bot_data.pop(stop_flag, None)
 
-# --- 主函数 ---
 async def main() -> None:
     try:
         encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
         TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     except Exception as e:
-        logger.error(f"无法解码 Bot Token！错误: {e}"); return
+        logger.error(f"无法解码 Bot Token！错误: {e}")
+        return
         
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -425,10 +520,6 @@ async def main() -> None:
         await application.start()
         await application.updater.start_polling()
         await asyncio.Future()
-        logger.info("机器人正在关闭...")
-        await application.updater.stop()
-        await application.stop()
-        logger.info("机器人已关闭。")
 
 if __name__ == '__main__':
     try:
