@@ -5,7 +5,7 @@ import base64
 import requests
 import time
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.constants import ParseMode
@@ -296,7 +296,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data; bot = context.bot
     chat_id, base_query = job_data['chat_id'], job_data['query']
     output_filename = f"fofa_traceback_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
-    unique_results, page_count, last_page_timestamp, termination_reason = set(), 0, None, ""
+    unique_results, page_count, last_page_date, termination_reason = set(), 0, None, ""
     msg = await bot.send_message(chat_id, "⏳ 开始深度追溯下载...")
     current_query = base_query
     stop_flag = get_stop_flag_name(chat_id)
@@ -306,7 +306,6 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
             termination_reason = "\n\n🌀 任务已手动停止。"
             break
         
-        # --- 核心修正：使用官方推荐的 'lastupdatetime' 字段 ---
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
         
         if error:
@@ -327,14 +326,13 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        next_page_timestamp = None
+        next_page_timestamp_str = None
         for i in range(len(results) - 1, -1, -1):
             if not results[i] or not results[i][0]:
                 continue
             
             potential_anchor_host = results[i][0]
             
-            # --- 核心修正：使用官方推荐的 'lastupdatetime' 字段 ---
             anchor_host_data, _, anchor_host_error = await execute_query_with_fallback(
                 lambda key: fetch_fofa_data(key, f'host="{potential_anchor_host}"', 1, 1, "lastupdatetime")
             )
@@ -345,26 +343,37 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
                 len(anchor_host_data['results']) > 0 and 
                 len(anchor_host_data['results'][0]) > 0):
                 
-                next_page_timestamp = anchor_host_data['results'][0][0]
-                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到精确时间戳: {next_page_timestamp}")
+                # --- 核心修正：精确获取二维数组中的时间戳字符串 ---
+                next_page_timestamp_str = anchor_host_data['results'][0][0]
+                logger.info(f"成功为锚点主机 {potential_anchor_host} 获取到精确时间戳: {next_page_timestamp_str}")
                 break
 
-        if next_page_timestamp is None:
+        if next_page_timestamp_str is None:
             logger.error(f"在第 {page_count} 轮中，遍历了 {len(results)} 个结果，但均未能获取到有效的独立时间戳。")
             if results and results[-1] and len(results[-1]) > 1:
-                next_page_timestamp = results[-1][1]
+                next_page_timestamp_str = results[-1][1]
                 termination_reason = "\n\n⚠️ 警告：无法获取精确时间戳，后续结果可能不完整。"
             else:
                 termination_reason = "\n\n❌ 错误：无法确定下一页的时间戳，任务终止。"
                 break
+
+        # --- 核心修正：处理日期并为下一次查询做准备 ---
+        # 1. 将时间戳字符串转换为datetime对象
+        current_date_obj = datetime.strptime(next_page_timestamp_str.split(' ')[0], '%Y-%m-%d')
         
-        if next_page_timestamp == last_page_timestamp and newly_added_count == 0:
-            termination_reason = "\n\n⚠️ 任务因时间戳未推进且无新数据而终止，已达数据查询边界。"
-            logger.warning("追溯时间戳未变且无新数据，终止任务。")
+        # 2. 如果当前日期与上一轮相同，则将查询日期减一天，以避免重复查询和死循环
+        if last_page_date and current_date_obj.date() == last_page_date:
+             current_date_obj -= timedelta(days=1)
+        
+        next_page_date_str = current_date_obj.strftime('%Y-%m-%d')
+        
+        if next_page_date_str == last_page_date and newly_added_count == 0:
+            termination_reason = "\n\n⚠️ 任务因日期未推进且无新数据而终止，已达数据查询边界。"
+            logger.warning("追溯日期未变且无新数据，终止任务。")
             break
             
-        last_page_timestamp = next_page_timestamp
-        current_query = f'({base_query}) && before="{next_page_timestamp}"'
+        last_page_date = current_date_obj.date()
+        current_query = f'({base_query}) && before="{next_page_date_str}"'
 
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
