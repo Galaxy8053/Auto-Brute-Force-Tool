@@ -10,6 +10,7 @@ import json
 import base64
 import binascii
 import importlib.util # 修复导入错误所需
+import uuid # 为并发扩展扫描生成唯一ID
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -998,11 +999,12 @@ ALIST_GO_TEMPLATE_LINES = [
     "}",
 ]
 
-# TCP 端口活性测试模板 (主模式，写文件)
+# TCP 端口活性测试模板
 TCP_ACTIVE_GO_TEMPLATE_LINES = [
     "package main",
     "import (",
     "	\"bufio\"",
+    "	\"fmt\"",
     "	\"net\"",
     "	\"os\"",
     "	\"strings\"",
@@ -1045,55 +1047,6 @@ TCP_ACTIVE_GO_TEMPLATE_LINES = [
     "	wg.Wait()",
     "}",
 ]
-
-# TCP 端口活性测试模板 (预扫描模式，带进度反馈)
-TCP_PRESCAN_GO_TEMPLATE_LINES = [
-    "package main",
-    "import (",
-    "	\"bufio\"",
-    "	\"fmt\"",
-    "	\"net\"",
-    "	\"os\"",
-    "	\"strings\"",
-    "	\"sync\"",
-    "	\"time\"",
-    ")",
-    "func worker(tasks <-chan string, wg *sync.WaitGroup) {",
-    "	defer wg.Done()",
-    "	for line := range tasks {",
-    "		ipPort := strings.TrimSpace(line)",
-    "		if _, _, err := net.SplitHostPort(ipPort); err != nil {",
-    "			fmt.Println(\"FAIL:\" + ipPort)",
-    "			continue",
-    "		}",
-    "		conn, err := net.DialTimeout(\"tcp\", ipPort, {timeout}*time.Second)",
-    "		if err == nil {",
-    "			conn.Close()",
-    "			fmt.Println(\"SUCCESS:\" + ipPort)",
-    "		} else {",
-    "			fmt.Println(\"FAIL:\" + ipPort)",
-    "		}",
-    "	}",
-    "}",
-    "func main() {",
-    "	if len(os.Args) < 2 { os.Exit(1) }",
-    "	inputFile := os.Args[1]",
-    "	batch, err := os.Open(inputFile)",
-    "	if err != nil { return }",
-    "	defer batch.Close()",
-    "	tasks := make(chan string, {semaphore_size})",
-    "	var wg sync.WaitGroup",
-    "	for i := 0; i < {semaphore_size}; i++ {",
-    "		wg.Add(1)",
-    "		go worker(tasks, &wg)",
-    "	}",
-    "	scanner := bufio.NewScanner(batch)",
-    "	for scanner.Scan() { tasks <- strings.TrimSpace(scanner.Text()) }",
-    "	close(tasks)",
-    "	wg.Wait()",
-    "}",
-]
-
 
 # =========================== 新增: 子网TCP扫描模板 ===========================
 SUBNET_TCP_SCANNER_GO_TEMPLATE_LINES = [
@@ -1707,13 +1660,14 @@ def cleanup_swap(swap_file):
     except Exception as e:
         print("⚠️  [系统] 清理Swap文件失败: {}".format(e))
 
-# ==================== 全新执行模型 ====================
-def process_chunk(chunk_id, lines, executable_name, go_internal_concurrency):
+# ==================== 全新执行模型 (已优化) ====================
+def process_chunk(chunk_id, lines, executable_name, go_internal_concurrency, part_dir, output_dir):
     """
     处理单个IP块的函数，由Python的线程池调用。
+    现在接受 part_dir 和 output_dir 作为参数以提高通用性。
     """
-    input_file = os.path.join(TEMP_PART_DIR, "input_{}.txt".format(chunk_id))
-    output_file = os.path.join(TEMP_XUI_DIR, "output_{}.txt".format(chunk_id))
+    input_file = os.path.join(part_dir, "input_{}.txt".format(chunk_id))
+    output_file = os.path.join(output_dir, "output_{}.txt".format(chunk_id))
 
     with open(input_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
@@ -1728,7 +1682,7 @@ def process_chunk(chunk_id, lines, executable_name, go_internal_concurrency):
 
         cmd = ['./' + executable_name, input_file, output_file]
         
-        # 死锁修复：将 stderr 合并到 stdout
+        # 将 stderr 合并到 stdout 以避免死锁
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=run_env)
 
         # 实时读取合并后的输出流（字节流）并解码
@@ -1739,75 +1693,62 @@ def process_chunk(chunk_id, lines, executable_name, go_internal_concurrency):
                 # 使用 \r 和 end='' 来实现单行刷新，避免刷屏
                 print(line.strip().ljust(80), end='\r')
         
-        # 等待进程结束并获取返回码
         process.wait()
         
         if process.returncode != 0:
             if process.returncode == -9 or process.returncode == 137:
                  return (False, "任务 {} 被系统因内存不足而终止(OOM Killed)。".format(chunk_id))
             else:
-                 # 读取残余的错误信息（如果有）
                  stderr_output = process.stdout.read().decode('utf-8', 'ignore')
                  return (False, "任务 {} 失败，返回码 {}。\n错误信息:\n{}".format(chunk_id, process.returncode, stderr_output))
         
         return (True, None) # 成功
     finally:
-        # 清理临时文件
         if os.path.exists(input_file):
             os.remove(input_file)
-        # 输出文件保留，最后合并
 
-def run_scan_in_parallel(lines, executable_name, python_concurrency, go_internal_concurrency, chunk_size):
+def run_scan_in_parallel(lines, executable_name, python_concurrency, go_internal_concurrency, chunk_size, part_dir, output_dir, scan_desc="⚙️  [扫描] 处理任务块"):
     """
     使用Python线程池并发执行多个小的Go进程来完成扫描。
+    已优化为接受临时目录路径和任务描述。
     """
-    # 将所有IP分成小块
+    if not lines:
+        return
+
     chunks = [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
     
     print("ℹ️  [扫描] 已将 {} 个目标分为 {} 个小任务块。".format(len(lines), len(chunks)))
     
     with ThreadPoolExecutor(max_workers=python_concurrency) as executor:
-        # 提交所有任务
-        future_to_chunk_id = {executor.submit(process_chunk, i, chunk, executable_name, go_internal_concurrency): i for i, chunk in enumerate(chunks)}
+        future_to_chunk_id = {
+            executor.submit(process_chunk, i, chunk, executable_name, go_internal_concurrency, part_dir, output_dir): i
+            for i, chunk in enumerate(chunks)
+        }
         
-        # 使用tqdm显示总体进度
-        with tqdm(total=len(chunks), desc="⚙️  [扫描] 处理任务块", ncols=100) as pbar:
+        with tqdm(total=len(chunks), desc=scan_desc, ncols=100) as pbar:
             for future in as_completed(future_to_chunk_id):
                 chunk_id = future_to_chunk_id[future]
                 try:
                     success, error_message = future.result()
                     if not success:
-                        # 清除可能残留的单行日志
                         print(" " * 80, end='\r')
                         print("\n❌ {}".format(error_message))
-                        # 如果发生OOM，最好停止所有任务
                         if "OOM" in error_message:
-                            print(" detecting OOM error, stopping all tasks...")
+                            print("检测到OOM错误，正在停止所有任务...")
                             executor.shutdown(wait=False, cancel_futures=True)
                             raise SystemExit("内存不足，脚本已中止。请使用更低的并发数重试。")
                 except Exception as exc:
                     print('\n任务 {} 执行时产生异常: {}'.format(chunk_id, exc))
                 
                 pbar.update(1)
-    # 扫描结束后，打印一个换行符以清除最后的单行日志
     print("\n")
-
 
 # =======================================================
 
-def merge_xui_files():
-    merged_file = 'xui.txt' 
-    if os.path.exists(merged_file):
-        os.remove(merged_file)
-
-    with open(merged_file, 'w', encoding='utf-8') as outfile:
-        # 注意：现在输出文件名是 output_*.txt
-        for f in sorted(os.listdir(TEMP_XUI_DIR)):
-            if f.startswith("output_") and f.endswith(".txt"):
-                with open(os.path.join(TEMP_XUI_DIR, f), 'r', encoding='utf-8') as infile:
-                    shutil.copyfileobj(infile, outfile)
-
 def merge_result_files(prefix: str, output_name: str, target_dir: str):
+    """
+    通用的结果文件合并函数。
+    """
     output_path = output_name 
     if os.path.exists(output_path):
         os.remove(output_path)
@@ -1818,9 +1759,11 @@ def merge_result_files(prefix: str, output_name: str, target_dir: str):
 
     with open(output_path, "w", encoding="utf-8") as out:
         for f_path in files_to_merge:
-            with open(f_path, "r", encoding="utf-8") as f:
-                shutil.copyfileobj(f, out)
-
+            try:
+                with open(f_path, "r", encoding="utf-8") as f:
+                    shutil.copyfileobj(f, out)
+            except Exception:
+                pass # 忽略读取错误
 
 def run_ipcx(final_result_file, xlsx_output_file):
     if os.path.exists(final_result_file) and os.path.getsize(final_result_file) > 0:
@@ -1831,14 +1774,25 @@ def clean_temp_files(template_mode):
     print("🗑️  [清理] 正在删除临时文件...")
     shutil.rmtree(TEMP_PART_DIR, ignore_errors=True)
     shutil.rmtree(TEMP_XUI_DIR, ignore_errors=True)
-    if template_mode == 6: # 仅在SSH模式下清理
-        shutil.rmtree(TEMP_HMSUCCESS_DIR, ignore_errors=True)
-        shutil.rmtree(TEMP_HMFAIL_DIR, ignore_errors=True)
+    
+    # 清理所有可能的临时目录和文件
+    temp_dirs = [
+        "temp_prescan_parts", "temp_prescan_outputs",
+        "temp_expand_parts", "temp_expand_outputs",
+        TEMP_HMSUCCESS_DIR, TEMP_HMFAIL_DIR
+    ]
+    for d in temp_dirs:
+        shutil.rmtree(d, ignore_errors=True)
 
     # 增加清理新的go文件和可执行文件
-    for f in ['xui.go', 'subnet_scanner.go', 'ipcx.py', 'go.mod', 'go.sum', 
-              'xui_executable', 'xui_executable.exe',
-              'subnet_scanner_executable', 'subnet_scanner_executable.exe']: 
+    temp_files = [
+        'xui.go', 'subnet_scanner.go', 'ipcx.py', 'go.mod', 'go.sum', 
+        'xui_executable', 'xui_executable.exe',
+        'subnet_scanner_executable', 'subnet_scanner_executable.exe',
+        'tcp_prescan.go', 'tcp_prescan_executable', 'tcp_prescan_executable.exe',
+        'prescan_merged_results.tmp'
+    ]
+    for f in temp_files:
         if os.path.exists(f):
             try:
                 os.remove(f)
@@ -2006,11 +1960,9 @@ def check_environment(template_mode, is_china_env):
     
     ensure_packages(pkg_manager, ["curl", ping_package, iproute_package, "nmap", "masscan"])
         
-    # 智能依赖安装
     required_py_modules = ['requests', 'psutil', 'openpyxl', 'pyyaml', 'tqdm', 'colorama']
     missing_modules = []
     for module in required_py_modules:
-        # 修复: 使用 importlib.util.find_spec 替代 __import__
         if importlib.util.find_spec(module) is None:
             missing_modules.append(module)
 
@@ -2225,7 +2177,90 @@ def parse_result_line(line):
             
     return None, None, None, None
 
-def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_executable, subnet_size, go_concurrency, params):
+
+def process_expandable_cluster(cluster_info, executables, master_results, go_concurrency, params):
+    """
+    在单个线程中处理一个可扩展的IP集群。
+    """
+    subnet_prefix, port, user, password = cluster_info
+    main_brute_executable, subnet_scanner_executable = executables
+    subnet_size, timeout = params['subnet_size'], params['timeout']
+    
+    # 为每个任务生成唯一的临时文件名以避免冲突
+    task_id = str(uuid.uuid4())
+    subnet_scan_output = f"subnet_scan_{task_id}.tmp"
+    verification_input_file = f"verification_input_{task_id}.tmp"
+    verification_output_file = f"verification_output_{task_id}.tmp"
+    
+    newly_verified_for_this_cluster = set()
+    cidr = f"{subnet_prefix}.0.0/{subnet_size}" if subnet_size == 16 else f"{subnet_prefix}.0/{subnet_size}"
+    
+    try:
+        # 1. TCP子网扫描
+        try:
+            cmd = ['./' + subnet_scanner_executable, cidr, port, subnet_scan_output, str(go_concurrency * 2)]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except Exception:
+            return set() # 子网扫描失败则直接返回
+
+        if not os.path.exists(subnet_scan_output) or os.path.getsize(subnet_scan_output) == 0:
+            return set()
+
+        with open(subnet_scan_output, 'r', encoding='utf-8') as f:
+            all_live_ips_str = {line.strip() for line in f if line.strip()}
+        
+        # 2. 过滤已知IP
+        ips_to_verify = all_live_ips_str - {l.split()[0] for l in master_results}
+        if not ips_to_verify:
+            return set()
+
+        # 3. 二次验证
+        with open(verification_input_file, 'w', encoding='utf-8') as f:
+            f.write("\n".join(ips_to_verify))
+        
+        try:
+            # 必须为二次验证生成一个专用的、只包含当前有效凭据的Go程序
+            verify_params = params.copy()
+            verify_params.update({'usernames': [user], 'passwords': [password]})
+            
+            verifier_go_file = f"verifier_{task_id}.go"
+            verifier_executable = f"verifier_executable_{task_id}"
+
+            template_map = {
+                1: XUI_GO_TEMPLATE_1_LINES, 2: XUI_GO_TEMPLATE_2_LINES,
+                6: XUI_GO_TEMPLATE_6_LINES, 8: XUI_GO_TEMPLATE_8_LINES
+            }
+            template_lines = template_map.get(TEMPLATE_MODE)
+
+            if template_lines:
+                generate_go_code(verifier_go_file, template_lines, **verify_params)
+                compiled_verifier = compile_go_program(verifier_go_file, verifier_executable)
+
+                if compiled_verifier:
+                    cmd = ['./' + compiled_verifier, verification_input_file, verification_output_file]
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+                    if os.path.exists(verification_output_file):
+                        with open(verification_output_file, 'r', encoding='utf-8') as f:
+                            newly_verified_for_this_cluster = {line.strip() for line in f if line.strip()}
+        except Exception:
+            # 验证失败，忽略错误
+            pass
+
+    finally:
+        # 清理所有该任务的临时文件
+        for f in [subnet_scan_output, verification_input_file, verification_output_file,
+                  f"verifier_{task_id}.go", f"verifier_executable_{task_id}", f"verifier_executable_{task_id}.exe"]:
+            if os.path.exists(f):
+                os.remove(f)
+                
+    return newly_verified_for_this_cluster
+
+
+def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_executable, python_concurrency, go_concurrency, params):
+    """
+    [已优化] 并行化扩展扫描。
+    """
     if not os.path.exists(result_file) or os.path.getsize(result_file) == 0:
         return set()
 
@@ -2233,7 +2268,7 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
     with open(result_file, 'r', encoding='utf-8') as f:
         master_results = {line.strip() for line in f}
     
-    ips_to_analyze = master_results
+    ips_to_analyze = master_results.copy()
     
     for i in range(2): # 执行两轮扩展
         print(f"\n--- [扩展扫描 第 {i + 1}/2 轮] ---")
@@ -2243,15 +2278,10 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
             ip, port, user, password = parse_result_line(line)
             if not ip: continue
             
-            # 根据用户选择的子网大小进行分组
             ip_parts = ip.split('.')
-            if subnet_size == 16:
-                subnet_prefix = ".".join(ip_parts[:2])
-            else: # 默认 /24
-                subnet_prefix = ".".join(ip_parts[:3])
+            subnet_prefix = ".".join(ip_parts[:2]) if params['subnet_size'] == 16 else ".".join(ip_parts[:3])
             
             key = (subnet_prefix, port, user, password)
-            
             if key not in groups: groups[key] = set()
             groups[key].add(ip)
 
@@ -2261,74 +2291,33 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
             print(f"  - 第 {i + 1} 轮未找到符合条件的IP集群，扩展扫描结束。")
             break
 
-        print(f"  - 第 {i + 1} 轮发现 {len(expandable_targets)} 个可扩展的IP集群。")
+        print(f"  - 第 {i + 1} 轮发现 {len(expandable_targets)} 个可扩展的IP集群，开始并行扫描...")
         
         newly_verified_this_round = set()
-
-        for subnet_prefix, port, user, password in expandable_targets:
-            cidr = f"{subnet_prefix}.0.0/{subnet_size}" if subnet_size == 16 else f"{subnet_prefix}.0/{subnet_size}"
-            print(f"\n  --- [扫描集群] 目标: {cidr} 端口: {port} ---")
+        
+        with ThreadPoolExecutor(max_workers=python_concurrency) as executor:
+            executables = (main_brute_executable, subnet_scanner_executable)
+            future_to_cluster = {
+                executor.submit(process_expandable_cluster, cluster, executables, master_results, go_concurrency, params): cluster
+                for cluster in expandable_targets
+            }
             
-            # 1. 使用Go TCP扫描器寻找活性主机
-            subnet_scan_output = "subnet_scan_output.tmp"
-            if os.path.exists(subnet_scan_output): os.remove(subnet_scan_output)
-            
-            try:
-                cmd = ['./' + subnet_scanner_executable, cidr, port, subnet_scan_output, str(go_concurrency * 2)]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            except Exception as e:
-                print(f"    - ❌ 子网TCP扫描失败: {e}")
-                continue
-
-            if not os.path.exists(subnet_scan_output) or os.path.getsize(subnet_scan_output) == 0:
-                print("    - TCP扫描未发现新的活性主机。")
-                continue
-            
-            with open(subnet_scan_output, 'r') as f:
-                all_live_ips_str = {line.strip().split(':')[0] for line in f if line.strip()}
-
-            # 从已知结果中过滤，避免重复验证
-            ips_to_verify = {f"{ip}:{port}" for ip in all_live_ips_str} - {f"{l.split()[0]}" for l in master_results}
-
-            if not ips_to_verify:
-                print(f"    - TCP扫描发现 {len(all_live_ips_str)} 个活性主机，但均为已知结果。")
-                continue
-
-            print(f"    - TCP扫描发现 {len(ips_to_verify)} 个新的活性目标，正在进行二次验证...")
-
-            # 2. 使用主爆破程序对活性主机进行验证
-            verification_input_file = "verification_input.tmp"
-            with open(verification_input_file, 'w') as f:
-                for ip_port in ips_to_verify:
-                    f.write(f"{ip_port}\n")
-
-            try:
-                verification_output_file = "verification_output.tmp"
-                if os.path.exists(verification_output_file): os.remove(verification_output_file)
-
-                # 使用找到的特定用户名和密码进行验证
-                run_env = os.environ.copy()
-                run_env["GOGC"] = "50"
-                cmd = ['./' + main_brute_executable, verification_input_file, verification_output_file]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=run_env)
-                
-                if os.path.exists(verification_output_file):
-                    with open(verification_output_file, 'r') as f:
-                        new_finds = {line.strip() for line in f}
-                        print(f"    - ✅ 二次验证成功 {len(new_finds)} 个新目标。")
-                        newly_verified_this_round.update(new_finds)
-                    os.remove(verification_output_file)
-            except Exception as e:
-                print(f"    - ❌ 二次验证时发生未知错误: {e}")
-            
-            if os.path.exists(verification_input_file): os.remove(verification_input_file)
-            if os.path.exists(subnet_scan_output): os.remove(subnet_scan_output)
+            with tqdm(total=len(expandable_targets), desc=f"  - [扩展集群 Round {i+1}]", ncols=100, unit="cluster") as pbar:
+                for future in as_completed(future_to_cluster):
+                    try:
+                        new_finds_from_cluster = future.result()
+                        if new_finds_from_cluster:
+                            newly_verified_this_round.update(new_finds_from_cluster)
+                    except Exception as exc:
+                        print(f'\n  - 扩展集群时产生异常: {exc}')
+                    pbar.update(1)
 
         new_ips_this_round = newly_verified_this_round - master_results
         if not new_ips_this_round:
             print(f"--- 第 {i + 1} 轮未发现任何全新的IP，扩展扫描结束。 ---")
             break
         
+        print(f"--- 第 {i+1} 轮扫描共发现 {len(new_ips_this_round)} 个新目标。---")
         master_results.update(new_ips_this_round)
         ips_to_analyze = new_ips_this_round
 
@@ -2336,51 +2325,52 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
         initial_set = {line.strip() for line in f}
     return master_results - initial_set
 
-def run_go_tcp_prescan(source_lines, go_concurrency, timeout):
-    print("\n--- 正在执行 Go TCP 预扫描以筛选活性IP... ---")
 
-    # 1. 编译专用的TCP测试程序
-    generate_go_code("tcp_prescan.go", TCP_PRESCAN_GO_TEMPLATE_LINES, semaphore_size=go_concurrency, timeout=timeout)
+def run_go_tcp_prescan(source_lines, python_concurrency, go_internal_concurrency, chunk_size, timeout):
+    """
+    [已优化] 并行化TCP预扫描。
+    """
+    print("\n--- 正在执行并行化 Go TCP 预扫描以筛选活性IP... ---")
+
+    # 复用更稳健的 TCP_ACTIVE_GO_TEMPLATE
+    generate_go_code("tcp_prescan.go", TCP_ACTIVE_GO_TEMPLATE_LINES, semaphore_size=go_internal_concurrency, timeout=timeout)
     executable = compile_go_program("tcp_prescan.go", "tcp_prescan_executable")
     if not executable:
         print("  - ❌ TCP预扫描程序编译失败，跳过预扫描。")
         return source_lines
 
-    # 2. 运行扫描
-    input_file = "prescan_input.tmp"
-    output_file = "prescan_output.tmp"
-    if os.path.exists(output_file): os.remove(output_file)
-
-    with open(input_file, 'w', encoding='utf-8') as f:
-        f.write("\n".join(source_lines))
+    PRESCAN_PART_DIR = "temp_prescan_parts"
+    PRESCAN_OUTPUT_DIR = "temp_prescan_outputs"
+    os.makedirs(PRESCAN_PART_DIR, exist_ok=True)
+    os.makedirs(PRESCAN_OUTPUT_DIR, exist_ok=True)
     
     live_targets = []
     try:
-        cmd = ['./' + executable, input_file]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
+        run_scan_in_parallel(
+            lines=source_lines,
+            executable_name=executable,
+            python_concurrency=python_concurrency,
+            go_internal_concurrency=go_internal_concurrency,
+            chunk_size=chunk_size,
+            part_dir=PRESCAN_PART_DIR,
+            output_dir=PRESCAN_OUTPUT_DIR,
+            scan_desc="[⚡] TCP活性检测"
+        )
         
-        with tqdm(total=len(source_lines), desc="[⚡] TCP活性检测", ncols=100) as pbar:
-            for line in process.stdout:
-                pbar.update(1)
-                if line.startswith("SUCCESS:"):
-                    target = line.strip().split(':', 1)[1]
-                    live_targets.append(target)
+        merged_file = "prescan_merged_results.tmp"
+        merge_result_files(prefix="output_", output_name=merged_file, target_dir=PRESCAN_OUTPUT_DIR)
         
-        stderr_output = process.communicate()[1]
-        if process.returncode != 0:
-            print(f"\n  - ⚠️  Go TCP扫描进程返回非零代码: {process.returncode}")
-            if stderr_output:
-                print(f"  - 错误信息: {stderr_output}")
-
+        if os.path.exists(merged_file) and os.path.getsize(merged_file) > 0:
+            with open(merged_file, 'r', encoding='utf-8') as f:
+                live_targets = [line.strip() for line in f if line.strip()]
     except Exception as e:
         print(f"  - ❌ Go TCP预扫描执行失败: {e}，跳过预扫描。")
         return source_lines
     finally:
-        # 3. 清理
-        if os.path.exists(input_file): os.remove(input_file)
-        if os.path.exists(output_file): os.remove(output_file)
-        if os.path.exists("tcp_prescan.go"): os.remove("tcp_prescan.go")
-        if os.path.exists(executable): os.remove(executable)
+        shutil.rmtree(PRESCAN_PART_DIR, ignore_errors=True)
+        shutil.rmtree(PRESCAN_OUTPUT_DIR, ignore_errors=True)
+        for f in ["tcp_prescan.go", executable, "prescan_merged_results.tmp"]:
+            if os.path.exists(f): os.remove(f)
     
     print(f"--- ✅ Go TCP 预扫描完成。筛选出 {len(live_targets)} 个活性目标。---")
     return live_targets
@@ -2389,8 +2379,6 @@ def run_go_tcp_prescan(source_lines, go_concurrency, timeout):
 if __name__ == "__main__":
     start = time.time()
     interrupted = False
-    final_result_file = None
-    total_ips = 0 
     
     TEMP_PART_DIR = "temp_parts"
     TEMP_XUI_DIR = "xui_outputs"
@@ -2439,25 +2427,6 @@ if __name__ == "__main__":
             recommended_py_concurrency = cpu_cores * 2
             recommended_go_concurrency = 100
         
-        # 预扫描逻辑
-        if use_go_prescan:
-            all_lines = run_go_tcp_prescan(all_lines, recommended_go_concurrency * 2, 3)
-            total_ips = len(all_lines)
-            if not all_lines:
-                print("预扫描后没有发现活性目标，脚本结束。")
-                sys.exit(0)
-        
-        # 子网扩展扫描配置
-        use_expand_scan = False
-        subnet_expansion_size = 24
-        expand_choice = input("是否在扫描结束后启用子网扩展扫描? (y/N): ").strip().lower()
-        if expand_choice == 'y':
-            use_expand_scan = True
-            size_choice = input("请选择子网扩展范围 (1: /24 (C段), 2: /16 (B段), 默认 1): ").strip()
-            if size_choice == '2':
-                subnet_expansion_size = 16
-            print(f"  - 已选择 /{subnet_expansion_size} 范围进行扩展。")
-
         print("\n--- ⚙️  并发模型说明 ---")
         print("脚本将启动多个并行的扫描进程（由Python控制），每个进程内部再使用多个线程（由Go控制）进行扫描。")
         print("对于内存较小的设备，请保持“Python并发任务数”为一个较低的数值。")
@@ -2465,9 +2434,27 @@ if __name__ == "__main__":
         python_concurrency = input_with_default("请输入Python并发任务数", recommended_py_concurrency)
         go_internal_concurrency = input_with_default("请输入每个任务内部的Go并发数", recommended_go_concurrency)
         chunk_size = input_with_default("请输入每个小任务处理的IP数量", 500)
-
+        
+        # 预扫描逻辑
+        if use_go_prescan:
+            all_lines = run_go_tcp_prescan(all_lines, python_concurrency, go_internal_concurrency, chunk_size, 3)
+            total_ips = len(all_lines)
+            if not all_lines:
+                print("预扫描后没有发现活性目标，脚本结束。")
+                sys.exit(0)
+        
+        # 子网扩展扫描配置
+        use_expand_scan = False
         params = {'semaphore_size': go_internal_concurrency}
         params['timeout'] = input_with_default("超时时间(秒)", 3)
+
+        if TEMPLATE_MODE in [1, 2, 6, 8]:
+            expand_choice = input("是否在扫描结束后启用子网扩展扫描? (y/N): ").strip().lower()
+            if expand_choice == 'y':
+                use_expand_scan = True
+                size_choice = input("请选择子网扩展范围 (1: /24 (C段), 2: /16 (B段), 默认 1): ").strip()
+                params['subnet_size'] = 16 if size_choice == '2' else 24
+                print(f"  - 已选择 /{params['subnet_size']} 范围进行扩展。")
         
         params['test_url'] = "http://myip.ipip.net"
         if TEMPLATE_MODE in [9, 10, 11]:
@@ -2523,23 +2510,27 @@ if __name__ == "__main__":
             12: ALIST_GO_TEMPLATE_LINES, 13: TCP_ACTIVE_GO_TEMPLATE_LINES,
         }
 
-        template_lines = template_map[TEMPLATE_MODE]
+        template_lines = template_map.get(TEMPLATE_MODE)
+        if not template_lines:
+            print(f"❌ 错误: 模式 {TEMPLATE_MODE} 无效或未定义模板。")
+            sys.exit(1)
+
         generate_go_code("xui.go", template_lines, **params)
         
         executable = compile_go_program("xui.go", "xui_executable")
         if not executable: sys.exit(1)
         
         generate_ipcx_py()
-        run_scan_in_parallel(all_lines, executable, python_concurrency, go_internal_concurrency, chunk_size)
+        run_scan_in_parallel(all_lines, executable, python_concurrency, go_internal_concurrency, chunk_size, TEMP_PART_DIR, TEMP_XUI_DIR)
         
-        merge_xui_files()
+        initial_results_file = "xui_merged.txt"
+        merge_result_files(prefix="output_", output_name=initial_results_file, target_dir=TEMP_XUI_DIR)
         
-        initial_results_file = "xui.txt"
         if use_expand_scan and os.path.exists(initial_results_file) and os.path.getsize(initial_results_file) > 0:
             generate_go_code("subnet_scanner.go", SUBNET_TCP_SCANNER_GO_TEMPLATE_LINES)
             subnet_scanner_exec = compile_go_program("subnet_scanner.go", "subnet_scanner_executable")
             if subnet_scanner_exec:
-                newly_found_results = expand_scan_with_go(initial_results_file, executable, subnet_scanner_exec, subnet_expansion_size, go_internal_concurrency, params)
+                newly_found_results = expand_scan_with_go(initial_results_file, executable, subnet_scanner_exec, python_concurrency, go_internal_concurrency, params)
                 if newly_found_results:
                     print(f"--- [扩展] 扫描完成，共新增 {len(newly_found_results)} 个结果。正在合并... ---")
                     with open(initial_results_file, 'a', encoding='utf-8') as f:
@@ -2555,8 +2546,8 @@ if __name__ == "__main__":
         final_txt_file = f"{prefix}-{time_str}.txt"
         final_xlsx_file = f"{prefix}-{time_str}.xlsx"
         
-        if os.path.exists("xui.txt"):
-            os.rename("xui.txt", final_txt_file)
+        if os.path.exists(initial_results_file):
+            os.rename(initial_results_file, final_txt_file)
             run_ipcx(final_txt_file, final_xlsx_file)
 
         if TEMPLATE_MODE == 2 and os.path.exists(final_txt_file) and os.path.getsize(final_txt_file) > 0:
