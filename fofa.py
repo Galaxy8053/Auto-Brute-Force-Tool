@@ -145,7 +145,7 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 新增：智能导入旧缓存功能 ---
+# --- 智能导入旧缓存功能 (已修复) ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
@@ -156,49 +156,52 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     doc = update.message.reply_to_message.document
-    args = context.args
-    query_text = ""; provided_count = None
+    args = context.args; query_text = ""; provided_count = None
 
     if args[-1].isdigit():
-        provided_count = int(args[-1])
-        query_text = " ".join(args[:-1])
+        try:
+            provided_count = int(args[-1])
+            query_text = " ".join(args[:-1])
+        except (ValueError, IndexError):
+            query_text = " ".join(args)
     else:
         query_text = " ".join(args)
+    
     if not query_text:
         await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
-    result_count = -1
-    
+    # --- 核心修复：先检查大小，再决定操作 ---
     if doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
-        msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**，将跳过行数统计...")
-        if provided_count is not None:
-            result_count = provided_count
-            await msg.edit_text(f"正在使用您提供的数量 `{result_count}` 关联缓存...")
-        else:
-            await msg.edit_text("您未提供结果数量，将标记为未知。建议为大文件提供数量以获得更佳体验。")
+        msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
+        result_count = provided_count if provided_count is not None else -1
+        
+        cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
+        add_or_update_query(query_text, cache_data)
+        count_str = str(result_count) if result_count != -1 else "未知"
+        
+        reply_text = f"✅ **导入成功 (大文件模式)！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n\n下次使用此查询时即可进行增量更新。"
+        if result_count == -1:
+             reply_text += "\n\n*提示: 建议为大文件提供数量以获得更佳体验。*"
+        await msg.edit_text(reply_text, parse_mode=ParseMode.MARKDOWN)
     else:
         msg = await update.message.reply_text("正在下载文件并统计精确行数...")
         temp_path = f"import_{doc.file_name}"
         try:
-            file = await doc.get_file(); await file.download_to_drive(temp_path)
+            file = await doc.get_file() # 现在调用是安全的
+            await file.download_to_drive(temp_path)
             with open(temp_path, 'r', encoding='utf-8') as f:
                 counted_lines = sum(1 for line in f if line.strip())
-            result_count = counted_lines
-            await msg.edit_text(f"文件分析完成，共 `{result_count}` 条记录。")
+            
+            cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': counted_lines}
+            add_or_update_query(query_text, cache_data)
+            await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联 {counted_lines} 条结果的缓存。\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             await msg.edit_text(f"❌ 分析文件失败: {e}。")
-            if provided_count is not None:
-                result_count = provided_count
-                await msg.reply_text(f"将回退使用您提供的数量 `{result_count}`。")
         finally:
             if os.path.exists(temp_path): os.remove(temp_path)
 
-    cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
-    add_or_update_query(query_text, cache_data)
-    count_str = str(result_count) if result_count != -1 else "未知"
-    await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
-
 # --- 其他命令 (保持不变) ---
+# ... (backup, restore, history, kkfofa, settings, downloads, main, etc.) ...
 @restricted
 async def backup_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -347,7 +350,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
-# ... (所有 settings, 下载任务, main 函数与上一版完全一致) ...
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_', 1)[1]
     if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
