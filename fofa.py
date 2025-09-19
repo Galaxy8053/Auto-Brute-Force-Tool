@@ -23,21 +23,31 @@ from telegram.ext import (
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 基础配置 ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[ logging.StreamHandler() ] # 简化日志，只输出到控制台
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
-
 # --- 全局变量和常量 ---
 CONFIG_FILE = 'config.json'
 HISTORY_FILE = 'history.json'
+LOG_FILE = 'fofa_bot.log'
 MAX_HISTORY_SIZE = 50
 TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
 CACHE_EXPIRATION_SECONDS = 24 * 60 * 60 # 24 hours
+
+# --- 日志配置 ---
+if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > (5 * 1024 * 1024): # 5MB
+    try:
+        os.rename(LOG_FILE, LOG_FILE + '.old')
+    except OSError as e:
+        print(f"无法轮换日志文件: {e}")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 (
     STATE_KKFOFA_MODE,
@@ -149,7 +159,27 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 缓存刷新与导入 ---
+# --- 管理员命令 ---
+@restricted
+async def get_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if os.path.exists(LOG_FILE):
+        await update.message.reply_document(document=open(LOG_FILE, 'rb'), caption="这是当前的机器人运行日志。")
+    else:
+        await update.message.reply_text("❌ 未找到日志文件。")
+
+@restricted
+async def shutdown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ **收到指令！**\n机器人正在安全关闭...", parse_mode=ParseMode.MARKDOWN)
+    logger.info(f"接收到来自用户 {update.effective_user.id} 的关闭指令。")
+    shutdown_event = context.bot_data.get('shutdown_event')
+    if shutdown_event:
+        shutdown_event.set()
+    else:
+        logger.error("无法找到 shutdown_event, 无法正常关闭。")
+        await update.message.reply_text("❌ 内部错误：无法触发关闭事件。")
+
+
+# --- 智能导入与缓存刷新 ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
@@ -164,9 +194,8 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: query_text = " ".join(args)
     if not query_text: await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
-    msg = await update.message.reply_text("正在分析文件并导入...")
-    
     if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
+        msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
         result_count = provided_count if provided_count is not None else -1
         cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
         add_or_update_query(query_text, cache_data)
@@ -178,6 +207,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: reply_text += "下次使用此查询时即可进行增量更新。"
         await msg.edit_text(reply_text, parse_mode=ParseMode.MARKDOWN)
     else:
+        msg = await update.message.reply_text("正在下载文件并统计精确行数...")
         temp_path = f"import_{doc.file_name}"
         try:
             file = await doc.get_file(); await file.download_to_drive(temp_path)
@@ -192,27 +222,16 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @restricted
 async def refresh_cache_from_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """当用户回复一个缓存消息并发送文件时，自动刷新缓存"""
     if not update.message.reply_to_message or not update.message.reply_to_message.text: return
-
     original_text = update.message.reply_to_message.text
     match = re.search(r"查询: `(.+?)`", original_text)
-    if not match: return # 这不是一个缓存提示消息
-
-    query_text = match.group(1).replace('\\', '') # 提取查询语句并移除转义
-    
+    if not match: return
+    query_text = match.group(1).replace('\\', '')
     cached_item = find_cached_query(query_text)
     if not cached_item:
-        await update.message.reply_text("🤔 看起来这条消息对应的缓存记录不存在，请尝试使用 `/import` 命令手动导入。")
-        return
-    
+        await update.message.reply_text("🤔 看起来这条消息对应的缓存记录不存在，请尝试使用 `/import` 命令手动导入。"); return
     doc = update.message.document
-    new_cache_data = {
-        'file_id': doc.file_id,
-        'file_unique_id': doc.file_unique_id,
-        'file_name': doc.file_name,
-        'result_count': cached_item['cache']['result_count'] # 沿用旧的数量
-    }
+    new_cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': cached_item['cache']['result_count']}
     add_or_update_query(query_text, new_cache_data)
     await update.message.reply_text(f"✅ **缓存已刷新！**\n\n查询 `{escape_markdown(query_text)}` 的缓存时效已更新。\n现在可以对此查询进行增量更新了。", parse_mode=ParseMode.MARKDOWN)
 
@@ -349,7 +368,6 @@ async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     elif choice == 'cancel': await query.edit_message_text("操作已取消。"); return ConversationHandler.END
 
-# ... (所有其他函数与上一版完全一致) ...
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data.get('chat_id')
     if not chat_id:
@@ -410,6 +428,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
+# ... (所有 settings, 下载任务, main 函数与上一版完全一致) ...
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_', 1)[1]
     if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
@@ -635,7 +654,6 @@ async def main() -> None:
     application.add_handler(CommandHandler("shutdown", shutdown_command))
     application.add_handler(settings_conv)
     application.add_handler(kkfofa_conv)
-    # 核心修复：添加缓存刷新处理器
     application.add_handler(MessageHandler(filters.REPLY & filters.Document.FileExtension("txt"), refresh_cache_from_reply))
     application.add_handler(MessageHandler(filters.Document.FileExtension("json"), receive_config_file))
     
