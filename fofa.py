@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = 'config.json'
 HISTORY_FILE = 'history.json'
 MAX_HISTORY_SIZE = 50
+TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
 
 (
     STATE_KKFOFA_MODE,
@@ -144,51 +145,60 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 新增：导入旧缓存功能 ---
+# --- 新增：智能导入旧缓存功能 ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """手动导入一个旧的结果文件作为缓存"""
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text("❌ **使用方法错误**\n请**回复 (Reply)** 一个您想导入的 `.txt` 文件，然后再输入此命令。")
         return
-
     if not context.args:
-        await update.message.reply_text("❌ **缺少查询语句**\n请在命令后附上生成此文件的查询语句。\n\n例如：`/import app=\"nginx\"`")
+        await update.message.reply_text("❌ **缺少参数**\n请在命令后附上查询语句和可选的结果数量。\n\n*用法:*\n`/import <查询语句> [可选数量]`\n\n*示例:*\n`/import app=\"nginx\" 1888454`")
         return
 
     doc = update.message.reply_to_message.document
-    query_text = " ".join(context.args)
-    
-    msg = await update.message.reply_text("正在导入旧文件作为缓存...")
-    
-    temp_path = f"import_{doc.file_name}"
-    try:
-        # 下载文件以统计行数
-        file = await doc.get_file()
-        await file.download_to_drive(temp_path)
-        
-        with open(temp_path, 'r', encoding='utf-8') as f:
-            result_count = sum(1 for line in f if line.strip())
+    args = context.args
+    query_text = ""; provided_count = None
 
-        # 创建缓存记录
-        cache_data = {
-            'file_id': doc.file_id,
-            'file_unique_id': doc.file_unique_id,
-            'file_name': doc.file_name,
-            'result_count': result_count
-        }
-        add_or_update_query(query_text, cache_data)
-        
-        await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联 {result_count} 条结果的缓存。\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
+    if args[-1].isdigit():
+        provided_count = int(args[-1])
+        query_text = " ".join(args[:-1])
+    else:
+        query_text = " ".join(args)
+    if not query_text:
+        await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
-    except Exception as e:
-        await msg.edit_text(f"❌ 导入失败: {e}")
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    result_count = -1
+    
+    if doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
+        msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**，将跳过行数统计...")
+        if provided_count is not None:
+            result_count = provided_count
+            await msg.edit_text(f"正在使用您提供的数量 `{result_count}` 关联缓存...")
+        else:
+            await msg.edit_text("您未提供结果数量，将标记为未知。建议为大文件提供数量以获得更佳体验。")
+    else:
+        msg = await update.message.reply_text("正在下载文件并统计精确行数...")
+        temp_path = f"import_{doc.file_name}"
+        try:
+            file = await doc.get_file(); await file.download_to_drive(temp_path)
+            with open(temp_path, 'r', encoding='utf-8') as f:
+                counted_lines = sum(1 for line in f if line.strip())
+            result_count = counted_lines
+            await msg.edit_text(f"文件分析完成，共 `{result_count}` 条记录。")
+        except Exception as e:
+            await msg.edit_text(f"❌ 分析文件失败: {e}。")
+            if provided_count is not None:
+                result_count = provided_count
+                await msg.reply_text(f"将回退使用您提供的数量 `{result_count}`。")
+        finally:
+            if os.path.exists(temp_path): os.remove(temp_path)
+
+    cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
+    add_or_update_query(query_text, cache_data)
+    count_str = str(result_count) if result_count != -1 else "未知"
+    await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
 
 # --- 其他命令 (保持不变) ---
-# ... (backup, restore, history, etc.) ...
 @restricted
 async def backup_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -219,8 +229,8 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not HISTORY['queries']: await update.message.reply_text("🕰️ 暂无历史记录。"); return
     message_text = "🕰️ *最近10条查询记录:*\n\n"
     for i, query in enumerate(HISTORY['queries'][:10]):
-        dt_utc = datetime.fromisoformat(query['timestamp']); dt_local = dt_utc.astimezone()
-        time_str = dt_local.strftime('%Y-%m-%d %H:%M'); cache_icon = "✅" if query.get('cache') else "❌"
+        dt_utc = datetime.fromisoformat(query['timestamp']); dt_local = dt_utc.astimezone(); time_str = dt_local.strftime('%Y-%m-%d %H:%M')
+        cache_icon = "✅" if query.get('cache') else "❌"
         message_text += f"`{i+1}.` {escape_markdown(query['query_text'])} \n_{time_str}_  (缓存: {cache_icon})\n\n"
     await update.message.reply_text(message_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -259,7 +269,8 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cached_item:
         dt_utc = datetime.fromisoformat(cached_item['timestamp']); dt_local = dt_utc.astimezone(); time_str = dt_local.strftime('%Y-%m-%d %H:%M')
         result_count = cached_item['cache']['result_count']
-        message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{result_count}* 条结果)\n\n请选择操作：")
+        count_str = str(result_count) if result_count != -1 else "未知 (大文件)"
+        message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{count_str}* 条结果)\n\n请选择操作：")
         keyboard = [
             [InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')],
             [InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')],
@@ -310,7 +321,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = ( "📖 *Fofa 机器人指令手册*\n\n" 
                   "*🔍 资产查询*\n`/kkfofa [key编号] <查询语句>`\n\n" 
                   "*⚙️ 管理与设置*\n`/settings` - 进入交互式设置菜单\n\n" 
-                  "*💾 高级功能*\n`/backup` - 备份当前配置\n`/restore` - 恢复配置\n`/history` - 查看查询历史\n`/import` - 导入旧结果作为缓存\n\n"
+                  "*💾 高级功能*\n"
+                  "`/backup` - 备份当前配置\n"
+                  "`/restore` - 恢复配置\n"
+                  "`/history` - 查看查询历史\n"
+                  "`/import` - 导入旧结果作为缓存\n"
+                  "  用法: **回复**一个文件, 然后输入:\n"
+                  "  `/import <查询语句> [可选数量]`\n"
+                  "  示例: `/import app=\"nginx\" 1888454`\n\n"
                   "*🛑 任务控制*\n`/stop` - 紧急停止当前下载任务\n`/cancel` - 取消当前操作（如添加Key）" )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -484,8 +502,10 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e: await msg.edit_text(f"❌ 读取缓存文件失败: {e}"); return
     
     await msg.edit_text("2/5: 正在确定更新起始点...")
-    # 假设文件内容是host或ip:port，不需要复杂排序，直接取第一个即可
-    first_line = next(iter(old_results))
+    sorted_old_results = sorted(list(old_results), reverse=True)
+    if not sorted_old_results: await msg.edit_text(f"❌ 缓存文件为空，无法确定起始点"); os.remove(old_file_path); return
+    first_line = sorted_old_results[0]
+    
     data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, f'host="{first_line}"', fields="lastupdatetime"))
     if error or not data.get('results'):
         await msg.edit_text(f"❌ 无法获取最新记录时间戳: {error or '无结果'}"); os.remove(old_file_path); return
@@ -511,7 +531,7 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
         if data.get('results'): new_results.update(data.get('results', []))
 
     await msg.edit_text(f"4/5: 正在合并数据... (发现 {len(new_results)} 条新数据)")
-    combined_results = sorted(list(new_results.union(old_results)), reverse=True) # 简单反向排序
+    combined_results = sorted(list(new_results.union(old_results)), reverse=True)
     
     output_filename = f"fofa_updated_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
     with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(combined_results))
@@ -522,7 +542,8 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     add_or_update_query(base_query, cache_data)
     
     os.remove(old_file_path); os.remove(output_filename)
-    await msg.edit_text(f"✅ 增量更新完成！")
+    await msg.delete()
+    await bot.send_message(chat_id, f"✅ 增量更新完成！")
 
 
 async def main() -> None:
@@ -534,32 +555,27 @@ async def main() -> None:
     settings_conv = ConversationHandler(entry_points=[CommandHandler("settings", settings_command)], states={ STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern=r"^settings_")], STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern=r"^action_")], STATE_GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)], STATE_GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)], STATE_REMOVE_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)], }, fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(settings_command, pattern=r"^settings_back_main$")])
     kkfofa_conv = ConversationHandler(entry_points=[CommandHandler("kkfofa", kkfofa_command)], states={ STATE_CACHE_CHOICE: [CallbackQueryHandler(cache_choice_callback, pattern=r"^cache_")], STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern=r"^mode_")], }, fallbacks=[CommandHandler("cancel", cancel)])
     
-    # 注册所有处理器
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stop", stop_all_tasks))
     application.add_handler(CommandHandler("backup", backup_config_command))
     application.add_handler(CommandHandler("restore", restore_config_command))
     application.add_handler(CommandHandler("history", history_command))
-    application.add_handler(CommandHandler("import", import_command)) # 新增
+    application.add_handler(CommandHandler("import", import_command))
     application.add_handler(settings_conv)
     application.add_handler(kkfofa_conv)
     application.add_handler(MessageHandler(filters.Document.FileExtension("json"), receive_config_file))
     
     async with application:
         await application.bot.set_my_commands([ 
-            BotCommand("start", "🚀 启动机器人"), 
-            BotCommand("kkfofa", "🔍 资产搜索"), 
-            BotCommand("settings", "⚙️ 设置"), 
-            BotCommand("history", "🕰️ 查询历史"), 
-            BotCommand("import", "🖇️ 导入旧缓存"),
-            BotCommand("backup", "📤 备份配置"), 
-            BotCommand("restore", "📥 恢复配置"), 
-            BotCommand("stop", "🛑 停止任务"), 
-            BotCommand("help", "❓ 帮助"), 
-            BotCommand("cancel", "❌ 取消操作")])
+            BotCommand("start", "🚀 启动机器人"), BotCommand("kkfofa", "🔍 资产搜索"), 
+            BotCommand("settings", "⚙️ 设置"), BotCommand("history", "🕰️ 查询历史"), 
+            BotCommand("import", "🖇️ 导入旧缓存"), BotCommand("backup", "📤 备份配置"), 
+            BotCommand("restore", "📥 恢复配置"), BotCommand("stop", "🛑 停止任务"), 
+            BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消操作")])
         logger.info("🚀 机器人已启动..."); await application.start(); await application.updater.start_polling(); await asyncio.Future()
 
 if __name__ == '__main__':
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
+
