@@ -3,6 +3,7 @@ import json
 import logging
 import base64
 import time
+import re
 import asyncio
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -22,32 +23,21 @@ from telegram.ext import (
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 全局变量和常量 ---
-CONFIG_FILE = 'config.json'
-HISTORY_FILE = 'history.json'
-LOG_FILE = 'fofa_bot.log'
-MAX_HISTORY_SIZE = 50
-TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
-CACHE_EXPIRATION_SECONDS = 24 * 60 * 60 # 24 hours
-
-# --- 日志配置 (包含文件输出) ---
-# 简单的日志轮换
-if os.path.exists(LOG_FILE):
-    try:
-        os.rename(LOG_FILE, LOG_FILE + '.old')
-    except OSError as e:
-        print(f"无法轮换日志文件: {e}")
-
+# --- 基础配置 ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE), # 输出到文件
-        logging.StreamHandler()       # 同时输出到控制台
-    ]
+    handlers=[ logging.StreamHandler() ] # 简化日志，只输出到控制台
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# --- 全局变量和常量 ---
+CONFIG_FILE = 'config.json'
+HISTORY_FILE = 'history.json'
+MAX_HISTORY_SIZE = 50
+TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
+CACHE_EXPIRATION_SECONDS = 24 * 60 * 60 # 24 hours
 
 (
     STATE_KKFOFA_MODE,
@@ -62,17 +52,17 @@ logger = logging.getLogger(__name__)
 # --- 配置与历史记录管理 ---
 def load_json_file(filename, default_content):
     if not os.path.exists(filename):
-        with open(filename, 'w') as f: json.dump(default_content, f, indent=4)
+        with open(filename, 'w', encoding='utf-8') as f: json.dump(default_content, f, indent=4)
         return default_content
     try:
-        with open(filename, 'r') as f: return json.load(f)
+        with open(filename, 'r', encoding='utf-8') as f: return json.load(f)
     except (json.JSONDecodeError, IOError):
         logger.error(f"{filename} 损坏，将使用默认配置重建。")
-        with open(filename, 'w') as f: json.dump(default_content, f, indent=4)
+        with open(filename, 'w', encoding='utf-8') as f: json.dump(default_content, f, indent=4)
         return default_content
 
 def save_json_file(filename, data):
-    with open(filename, 'w') as f: json.dump(data, f, indent=4)
+    with open(filename, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4)
 
 default_admin_id = int(base64.b64decode('NzY5NzIzNTM1OA==').decode('utf-8'))
 CONFIG = load_json_file(CONFIG_FILE, {"apis": [], "admins": [default_admin_id], "proxy": "", "full_mode": False})
@@ -159,84 +149,75 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 管理员命令 ---
-@restricted
-async def get_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """发送日志文件给管理员"""
-    if os.path.exists(LOG_FILE):
-        await update.message.reply_document(document=open(LOG_FILE, 'rb'), caption="这是当前的机器人运行日志。")
-    else:
-        await update.message.reply_text("❌ 未找到日志文件。")
-
-@restricted
-async def shutdown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """优雅地关闭机器人"""
-    await update.message.reply_text("✅ **收到指令！**\n机器人正在安全关闭...再见！", parse_mode=ParseMode.MARKDOWN)
-    logger.info(f"接收到来自用户 {update.effective_user.id} 的关闭指令。")
-    # 使用 asyncio.create_task 在后台执行关闭，以确保确认消息能发送出去
-    asyncio.create_task(context.application.shutdown())
-
-# --- 智能导入旧缓存功能 ---
+# --- 缓存刷新与导入 ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
-        await update.message.reply_text("❌ **使用方法错误**\n请**回复 (Reply)** 一个您想导入的 `.txt` 文件，然后再输入此命令。")
-        return
+        await update.message.reply_text("❌ **使用方法错误**\n请**回复 (Reply)** 一个您想导入的 `.txt` 文件，然后再输入此命令。"); return
     if not context.args:
-        await update.message.reply_text("❌ **缺少参数**\n请在命令后附上查询语句和可选的结果数量。\n\n*用法:*\n`/import <查询语句> [可选数量]`\n\n*示例:*\n`/import app=\"nginx\" 1888454`")
-        return
-
-    doc = update.message.reply_to_message.document
-    args = context.args; query_text = ""; provided_count = None
-
-    if args[-1].isdigit():
-        try:
-            provided_count = int(args[-1])
-            query_text = " ".join(args[:-1])
-        except (ValueError, IndexError):
-            query_text = " ".join(args)
-    else:
-        query_text = " ".join(args)
+        await update.message.reply_text("❌ **缺少参数**\n请在命令后附上查询语句和可选的结果数量。\n\n*用法:*\n`/import <查询语句> [可选数量]`"); return
     
-    if not query_text:
-        await update.message.reply_text("❌ **查询语句不能为空**。"); return
+    doc = update.message.reply_to_message.document; args = context.args; query_text = ""; provided_count = None
+    if args[-1].isdigit():
+        try: provided_count = int(args[-1]); query_text = " ".join(args[:-1])
+        except (ValueError, IndexError): query_text = " ".join(args)
+    else: query_text = " ".join(args)
+    if not query_text: await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
+    msg = await update.message.reply_text("正在分析文件并导入...")
+    
     if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
-        msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
         result_count = provided_count if provided_count is not None else -1
-        
         cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
         add_or_update_query(query_text, cache_data)
         count_str = str(result_count) if result_count != -1 else "未知"
-        
         reply_text = f"✅ **导入成功 (大文件模式)！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n\n"
-        
         original_message_date = update.message.reply_to_message.date
         if (datetime.now(timezone.utc) - original_message_date).total_seconds() > CACHE_EXPIRATION_SECONDS:
-            reply_text += "⚠️ **警告**: 此文件发送于24小时前，其缓存**无法用于增量更新**，但仍可用于下载。"
-        else:
-            reply_text += "下次使用此查询时即可进行增量更新。"
-        
+            reply_text += "⚠️ **警告**: 此文件发送于24小时前，其缓存**无法用于增量更新**。您可以手动下载并重新发送此文件给我来刷新时效。"
+        else: reply_text += "下次使用此查询时即可进行增量更新。"
         await msg.edit_text(reply_text, parse_mode=ParseMode.MARKDOWN)
     else:
-        msg = await update.message.reply_text("正在下载文件并统计精确行数...")
         temp_path = f"import_{doc.file_name}"
         try:
-            file = await doc.get_file()
-            await file.download_to_drive(temp_path)
-            with open(temp_path, 'r', encoding='utf-8') as f:
-                counted_lines = sum(1 for line in f if line.strip())
-            
+            file = await doc.get_file(); await file.download_to_drive(temp_path)
+            with open(temp_path, 'r', encoding='utf-8') as f: counted_lines = sum(1 for line in f if line.strip())
             cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': counted_lines}
             add_or_update_query(query_text, cache_data)
             await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联 {counted_lines} 条结果的缓存。\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            logger.error(f"导入小文件时出错: {e}")
-            await msg.edit_text(f"❌ 导入失败: {e}")
+            logger.error(f"导入小文件时出错: {e}"); await msg.edit_text(f"❌ 导入失败: {e}")
         finally:
             if os.path.exists(temp_path): os.remove(temp_path)
 
+@restricted
+async def refresh_cache_from_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """当用户回复一个缓存消息并发送文件时，自动刷新缓存"""
+    if not update.message.reply_to_message or not update.message.reply_to_message.text: return
+
+    original_text = update.message.reply_to_message.text
+    match = re.search(r"查询: `(.+?)`", original_text)
+    if not match: return # 这不是一个缓存提示消息
+
+    query_text = match.group(1).replace('\\', '') # 提取查询语句并移除转义
+    
+    cached_item = find_cached_query(query_text)
+    if not cached_item:
+        await update.message.reply_text("🤔 看起来这条消息对应的缓存记录不存在，请尝试使用 `/import` 命令手动导入。")
+        return
+    
+    doc = update.message.document
+    new_cache_data = {
+        'file_id': doc.file_id,
+        'file_unique_id': doc.file_unique_id,
+        'file_name': doc.file_name,
+        'result_count': cached_item['cache']['result_count'] # 沿用旧的数量
+    }
+    add_or_update_query(query_text, new_cache_data)
+    await update.message.reply_text(f"✅ **缓存已刷新！**\n\n查询 `{escape_markdown(query_text)}` 的缓存时效已更新。\n现在可以对此查询进行增量更新了。", parse_mode=ParseMode.MARKDOWN)
+
 # --- 其他命令 ---
+# ... (backup, restore, history, settings, etc.) ...
 @restricted
 async def backup_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -254,7 +235,7 @@ async def receive_config_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     if document.file_name != CONFIG_FILE: await update.message.reply_text(f"❌ 文件名错误，请确保上传的文件名为 `{CONFIG_FILE}`。"); return
     try:
         file = await document.get_file(); temp_file_path = f"{CONFIG_FILE}.tmp"; await file.download_to_drive(temp_file_path)
-        with open(temp_file_path, 'r') as f: json.load(f)
+        with open(temp_file_path, 'r', encoding='utf-8') as f: json.load(f)
         os.replace(temp_file_path, CONFIG_FILE)
         CONFIG = load_json_file(CONFIG_FILE, {})
         await update.message.reply_text("✅ 配置已成功恢复！")
@@ -328,7 +309,7 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         if is_expired:
-            message_text += "⚠️ **此缓存已超过24小时，无法用于增量更新。**"
+            message_text += "⚠️ **此缓存已超过24小时，无法增量更新。**\n您可以手动下载此文件，然后**回复本消息**并重新上传，以刷新缓存时效。"
             keyboard.append([InlineKeyboardButton("⬇️ 下载旧缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
         else:
             message_text += "请选择操作："
@@ -368,6 +349,7 @@ async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     elif choice == 'cancel': await query.edit_message_text("操作已取消。"); return ConversationHandler.END
 
+# ... (所有其他函数与上一版完全一致) ...
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
     chat_id = job_data.get('chat_id')
     if not chat_id:
@@ -428,7 +410,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
-# ... (所有 settings, 下载任务, main 函数与上一版完全一致) ...
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_', 1)[1]
     if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
@@ -634,7 +615,12 @@ async def main() -> None:
         encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
         TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
     except Exception as e: logger.error(f"无法解码 Bot Token！错误: {e}"); return
+    
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    shutdown_event = asyncio.Event()
+    application.bot_data['shutdown_event'] = shutdown_event
+
     settings_conv = ConversationHandler(entry_points=[CommandHandler("settings", settings_command)], states={ STATE_SETTINGS_MAIN: [CallbackQueryHandler(settings_callback_handler, pattern=r"^settings_")], STATE_SETTINGS_ACTION: [CallbackQueryHandler(settings_action_handler, pattern=r"^action_")], STATE_GET_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_key)], STATE_GET_PROXY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_proxy)], STATE_REMOVE_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_api)], }, fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(settings_command, pattern=r"^settings_back_main$")])
     kkfofa_conv = ConversationHandler(entry_points=[CommandHandler("kkfofa", kkfofa_command)], states={ STATE_CACHE_CHOICE: [CallbackQueryHandler(cache_choice_callback, pattern=r"^cache_")], STATE_KKFOFA_MODE: [CallbackQueryHandler(query_mode_callback, pattern=r"^mode_")], }, fallbacks=[CommandHandler("cancel", cancel)])
     
@@ -649,6 +635,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("shutdown", shutdown_command))
     application.add_handler(settings_conv)
     application.add_handler(kkfofa_conv)
+    # 核心修复：添加缓存刷新处理器
+    application.add_handler(MessageHandler(filters.REPLY & filters.Document.FileExtension("txt"), refresh_cache_from_reply))
     application.add_handler(MessageHandler(filters.Document.FileExtension("json"), receive_config_file))
     
     async with application:
@@ -659,8 +647,23 @@ async def main() -> None:
             BotCommand("restore", "📥 恢复配置"), BotCommand("getlog", "📄 获取日志"),
             BotCommand("shutdown", "🔌 关闭机器人"), BotCommand("stop", "🛑 停止任务"), 
             BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消操作")])
-        logger.info("🚀 机器人已启动..."); await application.start(); await application.updater.start_polling(); await asyncio.Future()
+        
+        logger.info("🚀 机器人已启动...")
+        await application.start()
+        await application.updater.start_polling()
+        
+        await shutdown_event.wait()
+        
+        logger.info("正在停止 Updater...")
+        await application.updater.stop()
+        logger.info("正在停止 Application...")
+        await application.stop()
+
+    logger.info("机器人已安全关闭。")
 
 if __name__ == '__main__':
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("程序被强制退出。")
+
