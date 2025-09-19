@@ -580,7 +580,7 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
         with open(old_file_path, 'r', encoding='utf-8') as f: old_results = set(line.strip() for line in f if line.strip())
         if not old_results: raise ValueError("缓存文件为空。")
     except BadRequest:
-        await msg.edit_text("❌ **错误：缓存文件已无法下载**\n\n由于Telegram的限制，机器人无法下载超过24小时的文件。\n\n请返回并选择 **🔍 全新搜索** 来获取最新数据。");
+        await msg.edit_text("❌ **错误：缓存文件已无法下载**\n\n您导入的缓存文件可能超过了20MB，或者上传时间已超过24小时，机器人API无法下载它。\n\n请返回并选择 **🔍 全新搜索** 来获取最新数据。");
         return
     except Exception as e: await msg.edit_text(f"❌ 读取缓存文件失败: {e}"); return
     
@@ -631,9 +631,13 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
 
 async def main() -> None:
     try:
-        encoded_token = 'ODMyNTAwMjg5MTpBQUZyY1UzWExXYm02c0h5bjNtWm1GOEhwMHlRbHVUUXdaaw=='
-        TELEGRAM_BOT_TOKEN = base64.b64decode(encoded_token).decode('utf-8')
-    except Exception as e: logger.error(f"无法解码 Bot Token！错误: {e}"); return
+        # --- TOKEN 已更新 ---
+        # 我已经用您提供的新 Token 替换了原来的。
+        # 为了安全，请立即撤销这个已泄露的 Token 并换上一个全新的。
+        TELEGRAM_BOT_TOKEN = "8325002891:AAGSa4RdRWdDd5p6JdCYB79cmvHSSE-_UNc"
+    except Exception as e:
+        logger.error(f"无法设置 Bot Token！错误: {e}")
+        return
     
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -684,4 +688,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("程序被强制退出。")
-
