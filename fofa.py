@@ -22,18 +22,32 @@ from telegram.ext import (
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 基础配置 ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
-
 # --- 全局变量和常量 ---
 CONFIG_FILE = 'config.json'
 HISTORY_FILE = 'history.json'
+LOG_FILE = 'fofa_bot.log'
 MAX_HISTORY_SIZE = 50
 TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
+CACHE_EXPIRATION_SECONDS = 24 * 60 * 60 # 24 hours
+
+# --- 日志配置 (包含文件输出) ---
+# 简单的日志轮换
+if os.path.exists(LOG_FILE):
+    try:
+        os.rename(LOG_FILE, LOG_FILE + '.old')
+    except OSError as e:
+        print(f"无法轮换日志文件: {e}")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE), # 输出到文件
+        logging.StreamHandler()       # 同时输出到控制台
+    ]
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 (
     STATE_KKFOFA_MODE,
@@ -145,6 +159,23 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
+# --- 管理员命令 ---
+@restricted
+async def get_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """发送日志文件给管理员"""
+    if os.path.exists(LOG_FILE):
+        await update.message.reply_document(document=open(LOG_FILE, 'rb'), caption="这是当前的机器人运行日志。")
+    else:
+        await update.message.reply_text("❌ 未找到日志文件。")
+
+@restricted
+async def shutdown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """优雅地关闭机器人"""
+    await update.message.reply_text("✅ **收到指令！**\n机器人正在安全关闭...再见！", parse_mode=ParseMode.MARKDOWN)
+    logger.info(f"接收到来自用户 {update.effective_user.id} 的关闭指令。")
+    # 使用 asyncio.create_task 在后台执行关闭，以确保确认消息能发送出去
+    asyncio.create_task(context.application.shutdown())
+
 # --- 智能导入旧缓存功能 ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,9 +209,14 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_or_update_query(query_text, cache_data)
         count_str = str(result_count) if result_count != -1 else "未知"
         
-        reply_text = f"✅ **导入成功 (大文件模式)！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n\n下次使用此查询时即可进行增量更新。"
-        if result_count == -1:
-             reply_text += "\n\n*提示: 建议为大文件提供数量以获得更佳体验。*"
+        reply_text = f"✅ **导入成功 (大文件模式)！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n\n"
+        
+        original_message_date = update.message.reply_to_message.date
+        if (datetime.now(timezone.utc) - original_message_date).total_seconds() > CACHE_EXPIRATION_SECONDS:
+            reply_text += "⚠️ **警告**: 此文件发送于24小时前，其缓存**无法用于增量更新**，但仍可用于下载。"
+        else:
+            reply_text += "下次使用此查询时即可进行增量更新。"
+        
         await msg.edit_text(reply_text, parse_mode=ParseMode.MARKDOWN)
     else:
         msg = await update.message.reply_text("正在下载文件并统计精确行数...")
@@ -256,11 +292,9 @@ async def start_new_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"{success_message}\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard))
         return STATE_KKFOFA_MODE
 
-# --- 上下文自愈与恢复 ---
 def get_user_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict:
     chat_id = update.effective_chat.id
     if not context.user_data:
-        # 尝试从bot_data恢复
         persistent_data_key = f"persistent_user_data_{chat_id}"
         if persistent_data_key in context.bot_data:
             context.user_data.update(context.bot_data[persistent_data_key])
@@ -278,7 +312,6 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_text = " ".join(args[1:])
     except (ValueError, IndexError): pass
     
-    # 核心修复：持久化上下文
     user_data = get_user_data(update, context)
     user_data.update({'query': query_text, 'key_index': key_index, 'chat_id': update.effective_chat.id})
     context.bot_data[f"persistent_user_data_{update.effective_chat.id}"] = user_data.copy()
@@ -288,18 +321,32 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dt_utc = datetime.fromisoformat(cached_item['timestamp']); dt_local = dt_utc.astimezone(); time_str = dt_local.strftime('%Y-%m-%d %H:%M')
         result_count = cached_item['cache']['result_count']
         count_str = str(result_count) if result_count != -1 else "未知 (大文件)"
-        message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{count_str}* 条结果)\n\n请选择操作：")
-        keyboard = [[InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')], [InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')], [InlineKeyboardButton("❌ 取消", callback_data='cache_cancel')]]
+        
+        is_expired = (datetime.now(timezone.utc) - dt_utc).total_seconds() > CACHE_EXPIRATION_SECONDS
+        
+        message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{count_str}* 条结果)\n\n")
+        
+        keyboard = []
+        if is_expired:
+            message_text += "⚠️ **此缓存已超过24小时，无法用于增量更新。**"
+            keyboard.append([InlineKeyboardButton("⬇️ 下载旧缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
+        else:
+            message_text += "请选择操作："
+            keyboard.append([InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')])
+            keyboard.append([InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
+        
+        keyboard.append([InlineKeyboardButton("❌ 取消", callback_data='cache_cancel')])
+        
         await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
         return STATE_CACHE_CHOICE
+        
     return await start_new_search(update, context)
 
 async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     user_data = get_user_data(update, context)
     if not user_data:
-        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。")
-        return ConversationHandler.END
+        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。"); return ConversationHandler.END
 
     choice = query.data.split('_')[1]
     if choice == 'download':
@@ -311,7 +358,7 @@ async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.delete_message()
             except BadRequest as e:
                 logger.error(f"发送缓存文件失败: {e}")
-                await query.edit_message_text(f"❌ 发送缓存失败: 文件可能已从Telegram服务器过期。\n请尝试增量更新或全新搜索。")
+                await query.edit_message_text(f"❌ 发送缓存失败: {e}\n可能是文件已从Telegram服务器过期。")
         else: await query.edit_message_text("❌ 找不到缓存记录，请重新搜索。")
         return ConversationHandler.END
     elif choice == 'newsearch': return await start_new_search(update, context)
@@ -325,7 +372,6 @@ async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, 
     chat_id = job_data.get('chat_id')
     if not chat_id:
         logger.error("start_download_job 失败: job_data 中缺少 'chat_id'。")
-        # 尝试从 context.job.chat_id 获取 (如果可用)
         if hasattr(context.job, 'chat_id') and context.job.chat_id:
              await context.bot.send_message(context.job.chat_id, "❌ 内部错误：无法启动下载任务，会话信息丢失。")
         return
@@ -355,17 +401,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   "`/history` - 查看查询历史\n"
                   "`/import` - 导入旧结果作为缓存\n"
                   "  用法: **回复**一个文件, 然后输入:\n"
-                  "  `/import <查询语句> [可选数量]`\n"
-                  "  示例: `/import app=\"nginx\" 1888454`\n\n"
-                  "*🛑 任务控制*\n`/stop` - 紧急停止当前下载任务\n`/cancel` - 取消当前操作（如添加Key）" )
+                  "  `/import <查询语句> [可选数量]`\n\n"
+                  "*💻 系统管理 (仅管理员)*\n"
+                  "`/getlog` - 获取机器人运行日志\n"
+                  "`/shutdown` - 安全关闭机器人\n\n"
+                  "*🛑 任务控制*\n`/stop` - 紧急停止当前下载任务\n`/cancel` - 取消当前操作" )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     user_data = get_user_data(update, context)
     if not user_data:
-        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。")
-        return ConversationHandler.END
+        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。"); return ConversationHandler.END
 
     mode = query.data.split('_')[1]
     if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, user_data)
@@ -532,7 +579,9 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
         file = await bot.get_file(cached_item['cache']['file_id']); await file.download_to_drive(old_file_path)
         with open(old_file_path, 'r', encoding='utf-8') as f: old_results = set(line.strip() for line in f if line.strip())
         if not old_results: raise ValueError("缓存文件为空。")
-    except BadRequest: await msg.edit_text("❌ 错误：缓存文件已从TG服务器过期，请执行全新搜索。"); return
+    except BadRequest:
+        await msg.edit_text("❌ **错误：缓存文件已无法下载**\n\n由于Telegram的限制，机器人无法下载超过24小时的文件。\n\n请返回并选择 **🔍 全新搜索** 来获取最新数据。");
+        return
     except Exception as e: await msg.edit_text(f"❌ 读取缓存文件失败: {e}"); return
     
     await msg.edit_text("2/5: 正在确定更新起始点...")
@@ -596,6 +645,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("restore", restore_config_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("import", import_command))
+    application.add_handler(CommandHandler("getlog", get_log_command))
+    application.add_handler(CommandHandler("shutdown", shutdown_command))
     application.add_handler(settings_conv)
     application.add_handler(kkfofa_conv)
     application.add_handler(MessageHandler(filters.Document.FileExtension("json"), receive_config_file))
@@ -605,11 +656,11 @@ async def main() -> None:
             BotCommand("start", "🚀 启动机器人"), BotCommand("kkfofa", "🔍 资产搜索"), 
             BotCommand("settings", "⚙️ 设置"), BotCommand("history", "🕰️ 查询历史"), 
             BotCommand("import", "🖇️ 导入旧缓存"), BotCommand("backup", "📤 备份配置"), 
-            BotCommand("restore", "📥 恢复配置"), BotCommand("stop", "🛑 停止任务"), 
+            BotCommand("restore", "📥 恢复配置"), BotCommand("getlog", "📄 获取日志"),
+            BotCommand("shutdown", "🔌 关闭机器人"), BotCommand("stop", "🛑 停止任务"), 
             BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消操作")])
         logger.info("🚀 机器人已启动..."); await application.start(); await application.updater.start_polling(); await asyncio.Future()
 
 if __name__ == '__main__':
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
-
