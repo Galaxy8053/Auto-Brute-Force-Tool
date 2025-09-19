@@ -145,7 +145,7 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 智能导入旧缓存功能 (已修复) ---
+# --- 智能导入旧缓存功能 (终极修复版) ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
@@ -171,7 +171,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
     # --- 核心修复：先检查大小，再决定操作 ---
-    if doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
+    if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
         msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
         result_count = provided_count if provided_count is not None else -1
         
@@ -187,7 +187,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("正在下载文件并统计精确行数...")
         temp_path = f"import_{doc.file_name}"
         try:
-            file = await doc.get_file() # 现在调用是安全的
+            file = await doc.get_file()
             await file.download_to_drive(temp_path)
             with open(temp_path, 'r', encoding='utf-8') as f:
                 counted_lines = sum(1 for line in f if line.strip())
@@ -196,7 +196,8 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             add_or_update_query(query_text, cache_data)
             await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联 {counted_lines} 条结果的缓存。\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            await msg.edit_text(f"❌ 分析文件失败: {e}。")
+            logger.error(f"导入小文件时出错: {e}")
+            await msg.edit_text(f"❌ 导入失败: {e}")
         finally:
             if os.path.exists(temp_path): os.remove(temp_path)
 
@@ -580,4 +581,3 @@ async def main() -> None:
 if __name__ == '__main__':
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
-
