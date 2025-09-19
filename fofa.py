@@ -145,7 +145,7 @@ async def execute_query_with_fallback(query_func, preferred_key_index=None):
         return None, key_info['index'], error
     return None, None, f"所有Key均尝试失败，最后错误: {last_error}"
 
-# --- 智能导入旧缓存功能 (终极修复版) ---
+# --- 智能导入旧缓存功能 ---
 @restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
@@ -170,7 +170,6 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query_text:
         await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
-    # --- 核心修复：先检查大小，再决定操作 ---
     if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
         msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
         result_count = provided_count if provided_count is not None else -1
@@ -201,8 +200,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             if os.path.exists(temp_path): os.remove(temp_path)
 
-# --- 其他命令 (保持不变) ---
-# ... (backup, restore, history, kkfofa, settings, downloads, main, etc.) ...
+# --- 其他命令 ---
 @restricted
 async def backup_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -258,6 +256,17 @@ async def start_new_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"{success_message}\n请选择下载模式:", reply_markup=InlineKeyboardMarkup(keyboard))
         return STATE_KKFOFA_MODE
 
+# --- 上下文自愈与恢复 ---
+def get_user_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict:
+    chat_id = update.effective_chat.id
+    if not context.user_data:
+        # 尝试从bot_data恢复
+        persistent_data_key = f"persistent_user_data_{chat_id}"
+        if persistent_data_key in context.bot_data:
+            context.user_data.update(context.bot_data[persistent_data_key])
+            logger.info(f"为 chat_id {chat_id} 恢复了 user_data。")
+    return context.user_data
+
 @restricted
 async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -268,26 +277,33 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (1 <= key_index <= len(CONFIG['apis'])): await update.message.reply_text(f"❌ Key编号无效。"); return ConversationHandler.END
         query_text = " ".join(args[1:])
     except (ValueError, IndexError): pass
-    context.user_data.update({'query': query_text, 'key_index': key_index})
+    
+    # 核心修复：持久化上下文
+    user_data = get_user_data(update, context)
+    user_data.update({'query': query_text, 'key_index': key_index, 'chat_id': update.effective_chat.id})
+    context.bot_data[f"persistent_user_data_{update.effective_chat.id}"] = user_data.copy()
+
     cached_item = find_cached_query(query_text)
     if cached_item:
         dt_utc = datetime.fromisoformat(cached_item['timestamp']); dt_local = dt_utc.astimezone(); time_str = dt_local.strftime('%Y-%m-%d %H:%M')
         result_count = cached_item['cache']['result_count']
         count_str = str(result_count) if result_count != -1 else "未知 (大文件)"
         message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{count_str}* 条结果)\n\n请选择操作：")
-        keyboard = [
-            [InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')],
-            [InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')],
-            [InlineKeyboardButton("❌ 取消", callback_data='cache_cancel')]
-        ]
+        keyboard = [[InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')], [InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')], [InlineKeyboardButton("❌ 取消", callback_data='cache_cancel')]]
         await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
         return STATE_CACHE_CHOICE
     return await start_new_search(update, context)
 
 async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); choice = query.data.split('_')[1]
+    query = update.callback_query; await query.answer()
+    user_data = get_user_data(update, context)
+    if not user_data:
+        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。")
+        return ConversationHandler.END
+
+    choice = query.data.split('_')[1]
     if choice == 'download':
-        cached_item = find_cached_query(context.user_data['query'])
+        cached_item = find_cached_query(user_data['query'])
         if cached_item:
             await query.edit_message_text("⬇️ 正在从缓存发送文件...")
             try:
@@ -301,15 +317,23 @@ async def cache_choice_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif choice == 'newsearch': return await start_new_search(update, context)
     elif choice == 'incremental':
         await query.edit_message_text("⏳ 准备增量更新...")
-        await start_download_job(context, run_incremental_update_query, context.user_data)
+        await start_download_job(context, run_incremental_update_query, user_data)
         return ConversationHandler.END
     elif choice == 'cancel': await query.edit_message_text("操作已取消。"); return ConversationHandler.END
 
 async def start_download_job(context: ContextTypes.DEFAULT_TYPE, callback_func, job_data):
-    chat_id = job_data['chat_id']; job_name = f"download_job_{chat_id}"
+    chat_id = job_data.get('chat_id')
+    if not chat_id:
+        logger.error("start_download_job 失败: job_data 中缺少 'chat_id'。")
+        # 尝试从 context.job.chat_id 获取 (如果可用)
+        if hasattr(context.job, 'chat_id') and context.job.chat_id:
+             await context.bot.send_message(context.job.chat_id, "❌ 内部错误：无法启动下载任务，会话信息丢失。")
+        return
+
+    job_name = f"download_job_{chat_id}"
     for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
     context.bot_data.pop(f'stop_job_{chat_id}', None)
-    context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name)
+    context.job_queue.run_once(callback_func, 1, data=job_data, name=job_name, chat_id=chat_id)
     
 async def stop_all_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data[f'stop_job_{update.effective_chat.id}'] = True
@@ -337,9 +361,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 async def query_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer(); mode = query.data.split('_')[1]; job_data = context.user_data
-    if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, job_data)
-    elif mode == 'traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, job_data)
+    query = update.callback_query; await query.answer()
+    user_data = get_user_data(update, context)
+    if not user_data:
+        await query.edit_message_text("❌ 会话已过期，请重新发起 /kkfofa 查询。")
+        return ConversationHandler.END
+
+    mode = query.data.split('_')[1]
+    if mode == 'full': await query.edit_message_text(f"⏳ 开始全量下载任务..."); await start_download_job(context, run_full_download_query, user_data)
+    elif mode == 'traceback': await query.edit_message_text(f"⏳ 开始深度追溯下载任务..."); await start_download_job(context, run_traceback_download_query, user_data)
     elif mode == 'cancel': await query.edit_message_text("操作已取消。")
     return ConversationHandler.END
 
@@ -351,6 +381,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
+# ... (所有 settings, 下载任务, main 函数与上一版完全一致) ...
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_', 1)[1]
     if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
@@ -450,7 +481,7 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, current_query, 1, 10000, "host,lastupdatetime"))
         if error: termination_reason = f"\n\n❌ 第 {page_count} 轮出错: {error}"; break
         results = data.get('results', []);
-        if not results: termination_reason = "\n\nℹ️ 已获取所有查询结果."; break
+        if not results: termination_reason = f"\n\nℹ️ 已获取所有查询结果."; break
         original_count = len(unique_results); unique_results.update([r[0] for r in results if r and r[0]]); newly_added_count = len(unique_results) - original_count
         try: await msg.edit_text(f"⏳ 已找到 {len(unique_results)} 条... (第 {page_count} 轮, 新增 {newly_added_count})")
         except Exception: pass
@@ -581,3 +612,4 @@ async def main() -> None:
 if __name__ == '__main__':
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
+
