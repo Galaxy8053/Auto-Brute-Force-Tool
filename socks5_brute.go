@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.comcom/schollz/progressbar/v3"
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/net/proxy"
 	"gopkg.in/yaml.v3"
 )
