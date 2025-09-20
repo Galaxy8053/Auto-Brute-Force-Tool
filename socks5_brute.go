@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/schollz/progressbar/v3"
+	"github.comcom/schollz/progressbar/v3"
 	"golang.org/x/net/proxy"
 	"gopkg.in/yaml.v3"
 )
@@ -50,7 +50,7 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v11.0 (Final Fix) ==================")
+	fmt.Println("================== Universal Proxy Scanner v13.0 (Final Logic) ==================")
 
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP()
@@ -94,7 +94,6 @@ func main() {
 }
 
 func readNezhaConfig() string {
-	// Function to read nezha config...
 	nezhaServer := "未找到config.yml"
 	yamlFile, err := ioutil.ReadFile(configYmlFile)
 	if err != nil { return nezhaServer }
@@ -106,7 +105,6 @@ func readNezhaConfig() string {
 }
 
 func getPublicIP() (string, error) {
-	// Function to get public IP...
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", "http://myip.ipip.net", nil)
 	if err != nil { return "", err }
@@ -126,7 +124,6 @@ func getPublicIP() (string, error) {
 }
 
 func selectTestTarget(reader *bufio.Reader) (string, string) {
-	// Function to select test target...
 	fmt.Println("\n--- 测试目标选择 (安全等级已标注) ---")
 	fmt.Println("1: Baidu (HTTPS) - [★★★ 最高安全等级, 强力推荐]")
 	fmt.Println("2: IPIP.net (HTTP) - [★★☆ 较安全, 可用于IP验证]")
@@ -148,7 +145,6 @@ func selectTestTarget(reader *bufio.Reader) (string, string) {
 }
 
 func runModeMenu(proxyType, testURL, expectedBody, realIP string, reader *bufio.Reader) {
-	// Function to show mode menu...
 	for {
 		fmt.Printf("\n--- [%s 模式] ---", strings.ToUpper(proxyType))
 		fmt.Printf("\n1: 🧪 测试单个代理\n2: 🚀 从文件批量扫描\n3: ↩️  返回上级菜单\n")
@@ -168,18 +164,13 @@ func runModeMenu(proxyType, testURL, expectedBody, realIP string, reader *bufio.
 	}
 }
 
-// 最终修复: 引入统一的URL规范化函数
 func normalizeProxyURL(rawAddr string, defaultScheme string) (*url.URL, error) {
 	if !strings.Contains(rawAddr, "://") {
 		rawAddr = fmt.Sprintf("%s://%s", defaultScheme, rawAddr)
 	}
 	proxyURL, err := url.Parse(rawAddr)
-	if err != nil {
-		return nil, fmt.Errorf("代理地址格式无效: %v", err)
-	}
-	if proxyURL.Host == "" {
-		return nil, fmt.Errorf("代理地址缺少主机部分")
-	}
+	if err != nil { return nil, fmt.Errorf("代理地址格式无效: %v", err) }
+	if proxyURL.Host == "" { return nil, fmt.Errorf("代理地址缺少主机部分") }
 	return proxyURL, nil
 }
 
@@ -188,22 +179,26 @@ func handleSingleProxyTest(proxyType, testURL, expectedBody, realIP string, read
 	proxyInput, _ := reader.ReadString('\n')
 	proxyInput = strings.TrimSpace(proxyInput)
 	if proxyInput == "" { return }
-
 	proxyURL, err := normalizeProxyURL(proxyInput, proxyType)
 	if err != nil {
 		fmt.Printf("❌ %v\n", err)
 		return
 	}
-
 	fmt.Print("输入超时时间 (秒, 默认15): ")
 	timeoutStr, _ := reader.ReadString('\n')
 	timeout, err := strconv.Atoi(strings.TrimSpace(timeoutStr))
 	if err != nil || timeout <= 0 { timeout = 15 }
-
 	fmt.Printf("正在测试代理: %s...\n", proxyURL.String())
-	success, speed, err := checkConnection(proxyURL, testURL, expectedBody, time.Duration(timeout)*time.Second, realIP)
+
+	success, httpClient, err := checkConnection(proxyURL, testURL, expectedBody, time.Duration(timeout)*time.Second, realIP)
 	if success {
-		fmt.Printf("✅ 代理可用 | 速度: %.2f KB/s\n", speed)
+		fmt.Println("✅ 代理连接成功, 正在测速...")
+		speed, speedErr := performSpeedTest(httpClient)
+		if speedErr != nil {
+			fmt.Printf("⚠️  代理可用, 但测速失败: %v\n", speedErr)
+		} else {
+			fmt.Printf("✅ 代理可用 | 速度: %.2f KB/s\n", speed)
+		}
 	} else {
 		if err != nil {
 			fmt.Printf("❌ 代理不可用。原因: %v\n", err)
@@ -214,7 +209,6 @@ func handleSingleProxyTest(proxyType, testURL, expectedBody, realIP string, read
 }
 
 func handleBatchScan(proxyType, testURL, expectedBody, realIP string, reader *bufio.Reader) {
-	// Function to handle batch scan setup...
 	fmt.Printf("输入代理列表文件名 (默认: %s): ", defaultProxiesFile)
 	proxyFilename, _ := reader.ReadString('\n')
 	proxyFilename = strings.TrimSpace(proxyFilename)
@@ -231,12 +225,10 @@ func handleBatchScan(proxyType, testURL, expectedBody, realIP string, reader *bu
 	minSpeedStr, _ := reader.ReadString('\n')
 	minSpeed, err := strconv.ParseFloat(strings.TrimSpace(minSpeedStr), 64)
 	if err != nil { minSpeed = 50.0 }
-
 	batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename, concurrency, time.Duration(timeout)*time.Second, minSpeed)
 }
 
 func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, concurrency int, timeout time.Duration, minSpeed float64) {
-	// Function to perform batch scan...
 	proxiesFile, err := os.Open(proxyFilename)
 	if err != nil { return }
 	defer proxiesFile.Close()
@@ -267,13 +259,13 @@ func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, c
 			defer wg.Done()
 			for proxyAddr := range proxyChan {
 				proxyURL, err := normalizeProxyURL(proxyAddr, proxyType)
-				if err != nil {
-					bar.Add(1)
-					continue
-				}
-				success, speed, _ := checkConnection(proxyURL, testURL, expectedBody, timeout, realIP)
-				if success && speed >= minSpeed {
-					resultsChan <- fmt.Sprintf("%s # %.2f KB/s", proxyURL.String(), speed)
+				if err != nil { bar.Add(1); continue }
+				success, httpClient, _ := checkConnection(proxyURL, testURL, expectedBody, timeout, realIP)
+				if success {
+					speed, _ := performSpeedTest(httpClient)
+					if speed >= minSpeed {
+						resultsChan <- fmt.Sprintf("%s # %.2f KB/s", proxyURL.String(), speed)
+					}
 				}
 				bar.Add(1)
 			}
@@ -300,22 +292,21 @@ func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, c
 }
 
 
-func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout time.Duration, realIP string) (bool, float64, error) {
-	transport := &http.Transport{ MaxIdleConnsPerHost: 100 }
-
+func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout time.Duration, realIP string) (bool, *http.Client, error) {
+	transport := &http.Transport{MaxIdleConnsPerHost: 100}
 	switch proxyURL.Scheme {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(proxyURL)
 	case "socks5":
 		dialer, err := proxy.FromURL(proxyURL, &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second})
-		if err != nil { return false, 0, err }
+		if err != nil { return false, nil, err }
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }
 	default:
-		return false, 0, fmt.Errorf("不支持的代理协议: %s", proxyURL.Scheme)
+		return false, nil, fmt.Errorf("不支持的代理协议: %s", proxyURL.Scheme)
 	}
 
 	parsedTestURL, err := url.Parse(testURL)
-	if err != nil { return false, 0, fmt.Errorf("无效的测试URL: %v", err) }
+	if err != nil { return false, nil, fmt.Errorf("无效的测试URL: %v", err) }
 	if parsedTestURL.Scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{ServerName: parsedTestURL.Hostname()}
 	}
@@ -325,56 +316,52 @@ func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout ti
 		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
 	}
-
 	req, err := http.NewRequest("GET", testURL, nil)
-	if err != nil { return false, 0, err }
+	if err != nil { return false, nil, err }
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-
 	resp, err := httpClient.Do(req)
-	if err != nil { return false, 0, err }
+	if err != nil { return false, nil, err }
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return false, 0, fmt.Errorf("bad status: %s", resp.Status) }
+	if resp.StatusCode != http.StatusOK { return false, nil, fmt.Errorf("bad status: %s", resp.Status) }
 	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil { return false, 0, fmt.Errorf("无法读取响应体") }
+	if err != nil { return false, nil, fmt.Errorf("无法读取响应体") }
 
 	if expectedBody == "ipip.net" {
 		bodyString := string(body)
 		var extractedIP string
 		if strings.Contains(bodyString, "当前 IP：") {
 			extractedIP = strings.Split(strings.Split(bodyString, "：")[1], " ")[0]
-		} else {
-			extractedIP = strings.TrimSpace(bodyString)
-		}
-		if net.ParseIP(extractedIP) == nil { return false, 0, fmt.Errorf("响应体不是有效的IP地址") }
-		if realIP != "UNKNOWN" && extractedIP == realIP { return false, 0, fmt.Errorf("IP地址未改变 (透明代理)") }
+		} else { extractedIP = strings.TrimSpace(bodyString) }
+		if net.ParseIP(extractedIP) == nil { return false, nil, fmt.Errorf("响应体不是有效的IP地址") }
+		if realIP != "UNKNOWN" && extractedIP == realIP { return false, nil, fmt.Errorf("IP地址未改变 (透明代理)") }
 		proxyHost, _, _ := net.SplitHostPort(proxyURL.Host)
 		if proxyHost == "" { proxyHost = proxyURL.Host }
-		if extractedIP == proxyHost { return false, 0, fmt.Errorf("代理返回了自己的IP (假代理)") }
+		if extractedIP == proxyHost { return false, nil, fmt.Errorf("代理返回了自己的IP (假代理)") }
 	} else {
 		if !strings.Contains(strings.ToLower(string(body)), expectedBody) {
-			return false, 0, fmt.Errorf("响应体中未找到特征码 '%s'", expectedBody)
+			return false, nil, fmt.Errorf("响应体中未找到特征码 '%s'", expectedBody)
 		}
 	}
+	return true, httpClient, nil
+}
 
-	// Speed Test
+func performSpeedTest(httpClient *http.Client) (float64, error) {
 	speedTestStartTime := time.Now()
-	speedReq, err := http.NewRequest("GET", speedTestURL, nil)
-	if err != nil { return false, 0, err }
-	speedResp, err := httpClient.Do(speedReq)
-	if err != nil { return false, 0, err }
-	defer speedResp.Body.Close()
-	if speedResp.StatusCode != http.StatusOK { return false, 0, fmt.Errorf("测速文件下载失败") }
-	_, err = io.Copy(ioutil.Discard, speedResp.Body)
-	if err != nil { return false, 0, fmt.Errorf("测速时读取响应体失败") }
+	req, err := http.NewRequest("GET", speedTestURL, nil)
+	if err != nil { return 0, fmt.Errorf("创建测速请求失败: %v", err) }
+	resp, err := httpClient.Do(req)
+	if err != nil { return 0, err }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK { return 0, fmt.Errorf("测速文件下载失败: %s", resp.Status) }
+	_, err = io.Copy(ioutil.Discard, resp.Body)
+	if err != nil { return 0, fmt.Errorf("测速时读取响应体失败") }
 	duration := time.Since(speedTestStartTime).Seconds()
-	if duration == 0 { return true, 99999, nil }
+	if duration == 0 { return 99999, nil }
 	speedKBps := (float64(speedTestSizeBytes) / 1024) / duration
-
-	return true, speedKBps, nil
+	return speedKBps, nil
 }
 
 func sendTelegramDocument(filePath string, caption string) {
-	// Function to send document via Telegram...
 	if telegramBotToken == "" || telegramUserID == "" { return }
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", telegramBotToken)
 	file, err := os.Open(filePath)
