@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	// "encoding/json" // **修复**: 移除了未使用的包
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -35,7 +34,6 @@ const (
 	outputDir              = "proxy_output"
 	configYmlFile          = "config.yml"
 
-	// --- Telegram Bot 配置 ---
 	telegramBotToken = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
 	telegramUserID   = "7697235358"
 )
@@ -58,7 +56,7 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v5.6 (Build Fix) ==================")
+	fmt.Println("================== Universal Proxy Scanner v5.7 (Anti-Redirect) ==================")
 
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP(defaultTestURL)
@@ -192,20 +190,17 @@ func selectTestTarget(reader *bufio.Reader) string {
 
 func runModeMenu(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	if proxyType == "https" && !strings.HasPrefix(testURL, "https://") {
-		fmt.Println("\n[警告] 您正在使用HTTP测试目标来测试HTTPS代理。")
-		fmt.Println("这很可能会失败。")
+		fmt.Println("\n[警告] 使用HTTP目标测试HTTPS代理很可能会失败。")
 	}
 
 	if proxyType == "http" && !strings.HasPrefix(testURL, "https://") {
-		fmt.Println("\n[警告] 使用HTTP目标测试HTTP代理无法区分真假，建议使用HTTPS目标。")
+		fmt.Println("\n[警告] 使用HTTP目标测试HTTP代理无法区分真假，强烈建议使用HTTPS目标。")
 	}
 
 	for {
 		fmt.Printf("\n--- [%s 模式] ---", strings.ToUpper(proxyType))
 		if runtime.GOOS == "windows" {
-			fmt.Println("\n1: -> 测试单个代理")
-			fmt.Println("2: >> 从文件批量扫描")
-			fmt.Println("3: <- 返回上级菜单")
+			fmt.Println("\n1: -> 测试单个代理\n2: >> 从文件批量扫描\n3: <- 返回上级菜单")
 		} else {
 			fmt.Printf("\n1: 🧪 测试单个代理\n2: 🚀 从文件批量扫描\n3: ↩️  返回上级菜单\n")
 		}
@@ -245,7 +240,6 @@ func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Read
 
 	var proxyAddr string
 	var auth *proxy.Auth
-	// var fullURI string // **修复**: 移除了未使用的变量
 
 	if strings.Contains(proxyInput, "://") {
 		parsedURL, err := url.Parse(proxyInput)
@@ -307,21 +301,18 @@ func handleBatchScan(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	if authMode == 2 {
 		fmt.Printf("输入用户文件名 (默认: %s): ", defaultUsernamesFile)
 		usernamesFile, _ = reader.ReadString('\n')
-		usernamesFile = strings.TrimSpace(usernamesFile)
-		if usernamesFile == "" {
+		if usernamesFile = strings.TrimSpace(usernamesFile); usernamesFile == "" {
 			usernamesFile = defaultUsernamesFile
 		}
 		fmt.Printf("输入密码文件名 (默认: %s): ", defaultPasswordsFile)
 		passwordsFile, _ = reader.ReadString('\n')
-		passwordsFile = strings.TrimSpace(passwordsFile)
-		if passwordsFile == "" {
+		if passwordsFile = strings.TrimSpace(passwordsFile); passwordsFile == "" {
 			passwordsFile = defaultPasswordsFile
 		}
 	} else if authMode == 3 {
 		fmt.Printf("输入弱密码文件名 (默认: %s): ", defaultCredentialsFile)
 		credentialsFile, _ = reader.ReadString('\n')
-		credentialsFile = strings.TrimSpace(credentialsFile)
-		if credentialsFile == "" {
+		if credentialsFile = strings.TrimSpace(credentialsFile); credentialsFile == "" {
 			credentialsFile = defaultCredentialsFile
 		}
 	}
@@ -554,6 +545,10 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
+		// **最终修复**: 添加此项以禁止自动重定向
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
 	req, err := http.NewRequest("GET", testURL, nil)
@@ -589,7 +584,7 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 		}
 
 		if net.ParseIP(extractedIP) == nil {
-			return false, fmt.Errorf("响应体不是有效的IP地址 (可能是登录页)")
+			return false, fmt.Errorf("响应体不是有效的IP地址 (可能是登录页或重定向)")
 		}
 
 		if realIP == "UNKNOWN" {
