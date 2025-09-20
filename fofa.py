@@ -74,14 +74,24 @@ def save_config(): save_json_file(CONFIG_FILE, CONFIG)
 def save_history(): save_json_file(HISTORY_FILE, HISTORY)
 
 def add_or_update_query(query_text, cache_data=None):
-    # --- 核心修复：增加对 q 是否为 None 的检查 ---
-    valid_queries = [
-        q for q in HISTORY['queries']
-        if q and not (q.get('cache', {}).get('cache_type') == 'local' and not os.path.exists(q['cache'].get('local_path', '')))
-    ]
-    HISTORY['queries'] = valid_queries
+    # --- 核心修复：极其健壮的历史记录清理 ---
+    sanitized_queries = []
+    if HISTORY.get('queries') and isinstance(HISTORY['queries'], list):
+        for q in HISTORY['queries']:
+            if not isinstance(q, dict): continue
+
+            is_valid = True
+            cache_info = q.get('cache')
+            if isinstance(cache_info, dict) and cache_info.get('cache_type') == 'local':
+                if not cache_info.get('local_path') or not os.path.exists(cache_info['local_path']):
+                    is_valid = False
+            
+            if is_valid:
+                sanitized_queries.append(q)
+
+    HISTORY['queries'] = sanitized_queries
     
-    existing_query = next((q for q in HISTORY['queries'] if q and q.get('query_text') == query_text), None)
+    existing_query = next((q for q in HISTORY['queries'] if q.get('query_text') == query_text), None)
 
     if existing_query:
         HISTORY['queries'].remove(existing_query)
@@ -91,12 +101,14 @@ def add_or_update_query(query_text, cache_data=None):
     elif query_text:
         new_query = {"query_text": query_text, "timestamp": datetime.now(timezone.utc).isoformat(), "cache": cache_data}
         HISTORY['queries'].insert(0, new_query)
+
     while len(HISTORY['queries']) > MAX_HISTORY_SIZE: HISTORY['queries'].pop()
     save_history()
 
 def find_cached_query(query_text):
-    query = next((q for q in HISTORY['queries'] if q and q.get('query_text') == query_text), None)
-    if query and query.get('cache'): return query
+    for q in HISTORY.get('queries', []):
+        if isinstance(q, dict) and q.get('query_text') == query_text and isinstance(q.get('cache'), dict):
+            return q
     return None
 
 # --- 辅助函数与装饰器 ---
@@ -582,3 +594,4 @@ async def main() -> None:
 if __name__ == '__main__':
     try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): logger.info("程序被强制退出。")
+
