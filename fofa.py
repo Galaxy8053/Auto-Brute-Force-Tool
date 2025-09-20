@@ -5,6 +5,7 @@ import base64
 import time
 import re
 import asyncio
+import random
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -608,13 +609,13 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(unique_results))
         await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。正在发送...")
-        with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
+        sent_message = await bot.send_document(chat_id, document=open(output_filename, 'rb'), filename=output_filename)
         os.remove(output_filename)
         cache_data = {
             'file_id': sent_message.document.file_id, 
             'file_unique_id': sent_message.document.file_unique_id, 
             'file_name': output_filename, 
-            'file_size': os.path.getsize(sent_message.document.file_path) if sent_message.document.file_path else 0,
+            'file_size': sent_message.document.file_size or 0,
             'result_count': len(unique_results)
         }
         add_or_update_query(query_text, cache_data)
@@ -622,12 +623,8 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.pop(stop_flag, None)
 
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
-    # This function remains largely the same, but the final caching part can be updated
-    # for brevity, I'll skip pasting the whole function and just note the change:
-    # After sending the document, the cache_data should also include file_size.
     job_data = context.job.data; bot = context.bot; chat_id, base_query = job_data['chat_id'], job_data['query']
     output_filename = f"fofa_traceback_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
-    # ... (existing traceback logic) ...
     unique_results, page_count, last_page_date, termination_reason = set(), 0, None, ""
     msg = await bot.send_message(chat_id, "⏳ 开始深度追溯下载...")
     current_query = base_query; stop_flag = f'stop_job_{chat_id}'
@@ -667,14 +664,13 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
         await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件...")
-        file_size = os.path.getsize(output_filename)
-        with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
+        sent_message = await bot.send_document(chat_id, document=open(output_filename, 'rb'), filename=output_filename)
         os.remove(output_filename)
         cache_data = {
             'file_id': sent_message.document.file_id, 
             'file_unique_id': sent_message.document.file_unique_id, 
             'file_name': output_filename, 
-            'file_size': file_size,
+            'file_size': sent_message.document.file_size or 0,
             'result_count': len(unique_results)
         }
         add_or_update_query(base_query, cache_data)
@@ -713,7 +709,6 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
                 old_results = set(line.strip() for line in f if line.strip())
             defer_cleanup_path = old_file_path
         except BadRequest:
-            # --- 优化后的错误提示 ---
             error_msg = "❌ **错误：缓存文件已无法下载**\n\n"
             if cache_info.get('file_size', 0) > TELEGRAM_DOWNLOAD_LIMIT:
                 error_msg += "原因: 此缓存文件大于 20MB，机器人无法下载它进行更新。\n请使用 `/urlimport` 命令导入大文件。"
@@ -727,20 +722,41 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ 错误: 缓存文件为空，无法进行增量更新。"); return
     
     await msg.edit_text("2/5: 正在确定更新起始点...")
-    sorted_old_results = sorted(list(old_results), reverse=True)
-    if not sorted_old_results: await msg.edit_text(f"❌ 缓存文件为空，无法确定起始点"); return
-    first_line = sorted_old_results[0]
-    
-    data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, f'host="{first_line}"', fields="lastupdatetime"))
-    if error or not data.get('results'):
-        await msg.edit_text(f"❌ 无法获取最新记录时间戳: {error or '无结果'}"); return
 
-    ts_str = data['results'][0] if not isinstance(data['results'][0], list) else data['results'][0][0]
-    cutoff_date = ts_str.split(' ')[0]
+    # --- 解决方案：随机采样 ---
+    # 从缓存中随机抽取最多20个样本，查询它们的真实更新时间，找到最晚的那个作为起点。
+    # 这比之前依赖错误排序的方法可靠得多。
+    sample_size = min(20, len(old_results))
+    random_sample = random.sample(list(old_results), sample_size)
+    latest_date = None
+    
+    await msg.edit_text(f"2/5: 正在检查 {sample_size} 个样本以确定最新更新...")
+
+    for i, host in enumerate(random_sample):
+        try:
+            await msg.edit_text(f"2/5: 检查样本 {i+1}/{sample_size}...")
+            data, _, error = await execute_query_with_fallback(
+                lambda key: fetch_fofa_data(key, f'host="{host}"', fields="lastupdatetime")
+            )
+            if not error and data and data.get('results'):
+                ts_str = data['results'][0] if not isinstance(data['results'][0], list) else data['results'][0][0]
+                current_date = datetime.strptime(ts_str.split(' ')[0], '%Y-%m-%d')
+                if latest_date is None or current_date > latest_date:
+                    latest_date = current_date
+        except Exception as e:
+            logger.warning(f"无法获取主机 {host} 的时间戳: {e}")
+            continue
+
+    if latest_date is None:
+        await msg.edit_text("❌ 无法从缓存样本中获取任何有效的时间戳。请尝试全新搜索。")
+        return
+
+    cutoff_date = latest_date.strftime('%Y-%m-%d')
+    # --- 解决方案结束 ---
+
     incremental_query = f'({base_query}) && after="{cutoff_date}"'
     
     await msg.edit_text(f"3/5: 正在侦察自 {cutoff_date} 以来的新数据...")
-    # FIX: Changed 'size=1' to 'page_size=1'
     data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, incremental_query, page_size=1))
     if error: await msg.edit_text(f"❌ 侦察查询失败: {error}"); return
 
@@ -763,14 +779,14 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(combined_results))
     await msg.edit_text(f"5/5: 发送更新后的文件... (共 {len(combined_results)} 条)")
     
-    output_filesize = os.path.getsize(output_filename)
-    with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
+    sent_message = await bot.send_document(chat_id, document=open(output_filename, 'rb'), filename=output_filename)
+    os.remove(output_filename)
     
     new_cache_data = {
         'file_id': sent_message.document.file_id, 
         'file_unique_id': sent_message.document.file_unique_id, 
         'file_name': output_filename, 
-        'file_size': output_filesize,
+        'file_size': sent_message.document.file_size or 0,
         'result_count': len(combined_results)
     }
     # 更新后的文件总是TG缓存，而不是本地缓存
@@ -782,10 +798,9 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     add_or_update_query(base_query, new_cache_data)
     
     if defer_cleanup_path and os.path.exists(defer_cleanup_path): os.remove(defer_cleanup_path)
-    if os.path.exists(output_filename): os.remove(output_filename)
 
     await msg.delete()
-    await bot.send_message(chat_id, f"✅ 增量更新完成！")
+    await bot.send_message(chat_id, f"✅ 增量更新完成！新增 {len(new_results)} 条, 总计 {len(combined_results)} 条。")
 
 
 async def main() -> None:
@@ -837,7 +852,6 @@ async def main() -> None:
         
         logger.info("正在停止 Updater...")
         await application.updater.stop()
-        # FIX: 为 updater 提供足够的清理时间，防止 RuntimeError
         await asyncio.sleep(1) 
         logger.info("正在停止 Application...")
         await application.stop()
@@ -849,4 +863,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("程序被强制退出。")
-
