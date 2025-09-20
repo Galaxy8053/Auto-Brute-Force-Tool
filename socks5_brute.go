@@ -56,7 +56,7 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v5.7 (Anti-Redirect) ==================")
+	fmt.Println("================== Universal Proxy Scanner v5.8 (Unified Logic) ==================")
 
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP(defaultTestURL)
@@ -119,7 +119,13 @@ func readNezhaConfig() string {
 }
 
 func getPublicIP(testURL string) (string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		// 防御性添加，防止获取IP时也被重定向欺骗
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
 		return "", err
@@ -131,6 +137,10 @@ func getPublicIP(testURL string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("获取IP失败，状态码: %d", resp.StatusCode)
+	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -517,6 +527,7 @@ func testProxy(proxyType, testURL, realIP, proxyAddr string, authMode int, timeo
 	return "", nil
 }
 
+// 最终修复：将防重定向逻辑直接整合进此函数
 func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, timeout time.Duration, realIP string) (bool, error) {
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: 100,
@@ -529,7 +540,7 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 			return false, err
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
-	} else {
+	} else { // "socks5"
 		dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, &net.Dialer{
 			Timeout:   timeout,
 			KeepAlive: 30 * time.Second,
@@ -545,7 +556,6 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
-		// **最终修复**: 添加此项以禁止自动重定向
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -560,11 +570,24 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false, err
+		// 如果错误是由于重定向策略导致的，我们不认为这是代理本身的错误
+		if urlErr, ok := err.(*url.Error); ok && urlErr.Err == http.ErrUseLastResponse {
+			// 这实际上意味着我们成功收到了一个响应（虽然是个重定向），现在我们需要检查这个响应
+		} else {
+			return false, err
+		}
+	}
+	if resp == nil {
+		return false, fmt.Errorf("response is nil after request")
 	}
 	defer resp.Body.Close()
 
+	// IP验证模式（最严格）
 	if strings.Contains(testURL, "ipip.net") {
+		// 对于ipip.net，我们只接受200 OK
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("ipip.net bad status: %s", resp.Status)
+		}
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return false, fmt.Errorf("无法读取响应体")
@@ -584,7 +607,7 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 		}
 
 		if net.ParseIP(extractedIP) == nil {
-			return false, fmt.Errorf("响应体不是有效的IP地址 (可能是登录页或重定向)")
+			return false, fmt.Errorf("响应体不是有效的IP地址")
 		}
 
 		if realIP == "UNKNOWN" {
@@ -597,6 +620,7 @@ func checkConnection(proxyType, testURL, proxyAddr string, auth *proxy.Auth, tim
 		return true, nil
 	}
 
+	// 对于非IP验证的URL（如Baidu, Google等）
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
 		return true, nil
 	}
