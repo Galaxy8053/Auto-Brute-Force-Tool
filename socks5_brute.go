@@ -34,7 +34,11 @@ const (
 	telegramUserID     = "7697235358"
 )
 
-var telegramClient = &http.Client{Timeout: 30 * time.Second}
+var (
+	telegramClient = &http.Client{Timeout: 30 * time.Second}
+	// 新增: 安全模式开关
+	insecureMode = false
+)
 
 type NezhaConfig struct {
 	Server string `yaml:"server"`
@@ -50,7 +54,7 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v13.0 (Final Logic) ==================")
+	fmt.Println("================== Universal Proxy Scanner v14.0 (Final Choice) ==================")
 
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP()
@@ -69,7 +73,13 @@ func main() {
 		fmt.Println("2: HTTP 代理模式")
 		fmt.Println("3: HTTPS 代理模式")
 		fmt.Println("4: 切换测试目标")
-		fmt.Println("5: 退出")
+		// 新增选项
+		if insecureMode {
+			fmt.Println("5: 切换到安全模式 (Strict TLS)")
+		} else {
+			fmt.Println("5: 切换到兼容模式 (Skip TLS Verify)")
+		}
+		fmt.Println("6: 退出")
 		fmt.Print("请选择要测试的代理协议: ")
 
 		typeChoiceStr, _ := reader.ReadString('\n')
@@ -85,6 +95,13 @@ func main() {
 		case 4:
 			testURL, expectedBody = selectTestTarget(reader)
 		case 5:
+			insecureMode = !insecureMode
+			if insecureMode {
+				fmt.Println("[*] 已切换到兼容模式。将忽略TLS证书错误。")
+			} else {
+				fmt.Println("[*] 已切换到安全模式。将严格验证TLS证书。")
+			}
+		case 6:
 			fmt.Println("正在退出...")
 			return
 		default:
@@ -307,9 +324,15 @@ func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout ti
 
 	parsedTestURL, err := url.Parse(testURL)
 	if err != nil { return false, nil, fmt.Errorf("无效的测试URL: %v", err) }
+	
+	// **最终修复**: 动态 TLS 配置
+	tlsConfig := &tls.Config{}
 	if parsedTestURL.Scheme == "https" {
-		transport.TLSClientConfig = &tls.Config{ServerName: parsedTestURL.Hostname()}
+		tlsConfig.ServerName = parsedTestURL.Hostname()
 	}
+	// 根据全局开关决定是否忽略证书错误
+	tlsConfig.InsecureSkipVerify = insecureMode
+	transport.TLSClientConfig = tlsConfig
 
 	httpClient := &http.Client{
 		Transport: transport,
