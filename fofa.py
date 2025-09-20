@@ -740,7 +740,8 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     incremental_query = f'({base_query}) && after="{cutoff_date}"'
     
     await msg.edit_text(f"3/5: 正在侦察自 {cutoff_date} 以来的新数据...")
-    data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, incremental_query, size=1))
+    # FIX: Changed 'size=1' to 'page_size=1'
+    data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, incremental_query, page_size=1))
     if error: await msg.edit_text(f"❌ 侦察查询失败: {error}"); return
 
     total_new_size = data.get('size', 0)
@@ -789,7 +790,7 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
 
 async def main() -> None:
     try:
-        TELEGRAM_BOT_TOKEN = "8325002891:AAGSa4RdRWdDd5p6JdCYB79cmvHSSE-_UNc"
+        TELEGRAM_BOT_TOKEN = "8325002891:AAHkNSGJnm7wCwcgeYQQkZ0CrNOuHT9R63Q"
     except Exception as e:
         logger.error(f"无法设置 Bot Token！错误: {e}")
         return
@@ -836,6 +837,8 @@ async def main() -> None:
         
         logger.info("正在停止 Updater...")
         await application.updater.stop()
+        # FIX: 为 updater 提供足够的清理时间，防止 RuntimeError
+        await asyncio.sleep(1) 
         logger.info("正在停止 Application...")
         await application.stop()
 
