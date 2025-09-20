@@ -29,7 +29,6 @@ CONFIG_FILE = 'config.json'
 HISTORY_FILE = 'history.json'
 LOG_FILE = 'fofa_bot.log'
 MAX_HISTORY_SIZE = 50
-# --- 核心改动：定义45MB为安全上传上限 ---
 TELEGRAM_BOT_UPLOAD_LIMIT = 45 * 1024 * 1024 
 LOCAL_CACHE_DIR = "fofa_cache"
 
@@ -75,10 +74,15 @@ def save_config(): save_json_file(CONFIG_FILE, CONFIG)
 def save_history(): save_json_file(HISTORY_FILE, HISTORY)
 
 def add_or_update_query(query_text, cache_data=None):
-    valid_queries = [q for q in HISTORY['queries'] if not (q.get('cache', {}).get('cache_type') == 'local' and not os.path.exists(q['cache'].get('local_path', '')))]
+    # --- 核心修复：增加对 q 是否为 None 的检查 ---
+    valid_queries = [
+        q for q in HISTORY['queries']
+        if q and not (q.get('cache', {}).get('cache_type') == 'local' and not os.path.exists(q['cache'].get('local_path', '')))
+    ]
     HISTORY['queries'] = valid_queries
     
-    existing_query = next((q for q in HISTORY['queries'] if q['query_text'] == query_text), None)
+    existing_query = next((q for q in HISTORY['queries'] if q and q.get('query_text') == query_text), None)
+
     if existing_query:
         HISTORY['queries'].remove(existing_query)
         existing_query['timestamp'] = datetime.now(timezone.utc).isoformat()
@@ -91,7 +95,7 @@ def add_or_update_query(query_text, cache_data=None):
     save_history()
 
 def find_cached_query(query_text):
-    query = next((q for q in HISTORY['queries'] if q['query_text'] == query_text), None)
+    query = next((q for q in HISTORY['queries'] if q and q.get('query_text') == query_text), None)
     if query and query.get('cache'): return query
     return None
 
@@ -363,8 +367,8 @@ async def get_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data, error = await verify_fofa_api(key)
     if not error and data:
         if key not in CONFIG['apis']: CONFIG['apis'].append(key); save_config(); await msg.edit_text(f"✅ 添加成功！你好, {escape_markdown(data.get('username', 'user'))}!", parse_mode=ParseMode.MARKDOWN)
-        else: await msg.edit_text(f"ℹ️ 该Key已存在。")
-    else: await msg.edit_text(f"❌ 验证失败: {error}")
+        else: await msg.edit_message_text(f"ℹ️ 该Key已存在。")
+    else: await msg.edit_message_text(f"❌ 验证失败: {error}")
     await asyncio.sleep(2); await msg.delete(); await show_api_menu(update, context); return STATE_SETTINGS_ACTION
 
 async def get_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,17 +388,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- 核心文件处理与发送逻辑 ---
 async def _save_and_send_results(bot, chat_id, query_text, results, msg):
-    # Step 1: Always save to local file first
     local_filename = f"fofa_cache_{hash(query_text) & 0xffffff}_{int(time.time())}.txt"
     local_file_path = os.path.join(LOCAL_CACHE_DIR, local_filename)
     with open(local_file_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(results))
     
-    # Step 2: Create cache metadata
     cache_data = {'cache_type': 'local', 'local_path': local_file_path, 'file_name': local_filename, 'result_count': len(results)}
     add_or_update_query(query_text, cache_data)
     
-    # Step 3: Smartly send the file to Telegram
     file_size = os.path.getsize(local_file_path)
     if file_size <= TELEGRAM_BOT_UPLOAD_LIMIT:
         try:
@@ -405,7 +406,6 @@ async def _save_and_send_results(bot, chat_id, query_text, results, msg):
             logger.error(f"发送文件时发生未知错误: {e}")
             await msg.edit_text(f"✅ 下载完成！共 {len(results)} 条。\n\n💾 结果已保存至服务器本地:\n`{escape_markdown(local_file_path)}`\n\n❌ 文件发送失败: {e}", parse_mode=ParseMode.MARKDOWN)
     else:
-        # --- NEW: File splitting logic ---
         num_parts = (file_size + TELEGRAM_BOT_UPLOAD_LIMIT - 1) // TELEGRAM_BOT_UPLOAD_LIMIT
         await msg.edit_text(f"📦 文件大小为 {file_size/1024/1024:.2f} MB，超过45MB。\n正在分割成 {num_parts} 个文件并发送...")
         try:
@@ -524,7 +524,7 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
         if error: await msg.edit_text(f"❌ 下载新数据失败: {error}"); return
         if data.get('results'): new_results.update(data.get('results', []))
         
-    await msg.edit_text(f"4/4: 正在合并数据... (发现 {len(new_results)} 条新数据)")
+    await msg.edit_text(f"4/4: 正在合并数据...")
     
     newly_added_results = new_results - old_results
     if newly_added_results:
