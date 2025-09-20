@@ -30,6 +30,11 @@ LOG_FILE = 'fofa_bot.log'
 MAX_HISTORY_SIZE = 50
 TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024 # 20 MB
 CACHE_EXPIRATION_SECONDS = 24 * 60 * 60 # 24 hours
+LOCAL_CACHE_DIR = "local_cache" # 用于存放URL下载的缓存文件
+
+# --- 初始化 ---
+if not os.path.exists(LOCAL_CACHE_DIR):
+    os.makedirs(LOCAL_CACHE_DIR)
 
 # --- 日志配置 ---
 if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > (5 * 1024 * 1024): # 5MB
@@ -181,6 +186,68 @@ async def shutdown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- 智能导入与缓存刷新 ---
 @restricted
+async def url_import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """从URL导入大文件作为缓存。"""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ **用法错误**\n"
+            "请提供文件的**直接下载链接**和**查询语句**。\n\n"
+            "*示例:*\n"
+            "`/urlimport https://example.com/results.txt app=\"nginx\"`"
+        , parse_mode=ParseMode.MARKDOWN)
+        return
+
+    url = context.args[0]
+    query_text = " ".join(context.args[1:])
+    
+    # 简单的URL验证
+    if not (url.startswith('http://') or url.startswith('https://')):
+        await update.message.reply_text("❌ **链接无效**\n请提供一个有效的 HTTP 或 HTTPS 链接。")
+        return
+
+    msg = await update.message.reply_text("⏳ 正在从链接下载文件，请稍候...")
+    
+    # 使用时间戳和查询哈希创建唯一的文件名
+    filename = f"url_cache_{int(time.time())}_{hash(query_text) & 0xffffff}.txt"
+    local_file_path = os.path.join(LOCAL_CACHE_DIR, filename)
+
+    try:
+        # 使用curl下载文件
+        command = f'curl -L -o "{local_file_path}" "{url}"'
+        proc = await asyncio.create_subprocess_shell(command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            await msg.edit_text(f"❌ **下载失败**\n错误: {stderr.decode().strip()}")
+            return
+        
+        await msg.edit_text("✅ 下载完成，正在处理文件...")
+
+        with open(local_file_path, 'r', encoding='utf-8') as f:
+            counted_lines = sum(1 for line in f if line.strip())
+
+        cache_data = {
+            'cache_type': 'local',
+            'local_path': local_file_path,
+            'file_name': os.path.basename(local_file_path),
+            'result_count': counted_lines
+        }
+        add_or_update_query(query_text, cache_data)
+
+        await msg.edit_text(
+            f"✅ **URL导入成功！**\n\n"
+            f"查询 `{escape_markdown(query_text)}` 已成功关联下载的文件。\n"
+            f"结果数量: *{counted_lines}*\n\n"
+            f"现在可以对此查询进行增量更新了。",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"从URL导入文件时出错: {e}")
+        await msg.edit_text(f"❌ 处理下载的文件时发生错误: {e}")
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
+
+@restricted
 async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text("❌ **使用方法错误**\n请**回复 (Reply)** 一个您想导入的 `.txt` 文件，然后再输入此命令。"); return
@@ -194,17 +261,24 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: query_text = " ".join(args)
     if not query_text: await update.message.reply_text("❌ **查询语句不能为空**。"); return
 
+    # --- 优化: 将文件大小存入缓存 ---
+    cache_data_base = {'file_name': doc.file_name, 'file_size': doc.file_size or 0}
+
     if doc.file_size and doc.file_size > TELEGRAM_DOWNLOAD_LIMIT:
         msg = await update.message.reply_text(f"⚠️ **检测到大文件 (>20MB)**\n将跳过下载，直接关联缓存...")
         result_count = provided_count if provided_count is not None else -1
-        cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': result_count}
+        
+        cache_data = {
+            **cache_data_base,
+            'file_id': doc.file_id, 
+            'file_unique_id': doc.file_unique_id,
+            'result_count': result_count
+        }
         add_or_update_query(query_text, cache_data)
+        
         count_str = str(result_count) if result_count != -1 else "未知"
         reply_text = f"✅ **导入成功 (大文件模式)！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联缓存。\n结果数量: *{count_str}*\n\n"
-        original_message_date = update.message.reply_to_message.date
-        if (datetime.now(timezone.utc) - original_message_date).total_seconds() > CACHE_EXPIRATION_SECONDS:
-            reply_text += "⚠️ **警告**: 此文件发送于24小时前，其缓存**无法用于增量更新**。您可以手动下载并重新发送此文件给我来刷新时效。"
-        else: reply_text += "下次使用此查询时即可进行增量更新。"
+        reply_text += "⚠️ **注意**: 由于文件大于20MB, **无法**对其进行增量更新。"
         await msg.edit_text(reply_text, parse_mode=ParseMode.MARKDOWN)
     else:
         msg = await update.message.reply_text("正在下载文件并统计精确行数...")
@@ -212,8 +286,15 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             file = await doc.get_file(); await file.download_to_drive(temp_path)
             with open(temp_path, 'r', encoding='utf-8') as f: counted_lines = sum(1 for line in f if line.strip())
-            cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': counted_lines}
+            
+            cache_data = {
+                **cache_data_base,
+                'file_id': doc.file_id, 
+                'file_unique_id': doc.file_unique_id, 
+                'result_count': counted_lines
+            }
             add_or_update_query(query_text, cache_data)
+            
             await msg.edit_text(f"✅ **导入成功！**\n\n查询 `{escape_markdown(query_text)}` 已成功关联 {counted_lines} 条结果的缓存。\n下次使用此查询时即可进行增量更新。", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             logger.error(f"导入小文件时出错: {e}"); await msg.edit_text(f"❌ 导入失败: {e}")
@@ -231,12 +312,17 @@ async def refresh_cache_from_reply(update: Update, context: ContextTypes.DEFAULT
     if not cached_item:
         await update.message.reply_text("🤔 看起来这条消息对应的缓存记录不存在，请尝试使用 `/import` 命令手动导入。"); return
     doc = update.message.document
-    new_cache_data = {'file_id': doc.file_id, 'file_unique_id': doc.file_unique_id, 'file_name': doc.file_name, 'result_count': cached_item['cache']['result_count']}
+    new_cache_data = {
+        'file_id': doc.file_id, 
+        'file_unique_id': doc.file_unique_id, 
+        'file_name': doc.file_name,
+        'file_size': doc.file_size or 0,
+        'result_count': cached_item['cache']['result_count']
+    }
     add_or_update_query(query_text, new_cache_data)
     await update.message.reply_text(f"✅ **缓存已刷新！**\n\n查询 `{escape_markdown(query_text)}` 的缓存时效已更新。\n现在可以对此查询进行增量更新了。", parse_mode=ParseMode.MARKDOWN)
 
 # --- 其他命令 ---
-# ... (backup, restore, history, settings, etc.) ...
 @restricted
 async def backup_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -327,14 +413,28 @@ async def kkfofa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_text = (f"✅ **发现缓存**\n\n查询: `{escape_markdown(query_text)}`\n缓存于: *{time_str}* (含 *{count_str}* 条结果)\n\n")
         
         keyboard = []
-        if is_expired:
-            message_text += "⚠️ **此缓存已超过24小时，无法增量更新。**\n您可以手动下载此文件，然后**回复本消息**并重新上传，以刷新缓存时效。"
+        cache_info = cached_item.get('cache', {})
+        cache_type = cache_info.get('cache_type')
+        
+        # 本地缓存永不过期，TG大文件无法增量更新
+        can_incremental = True
+        if cache_type != 'local' and (is_expired or cache_info.get('file_size', 0) > TELEGRAM_DOWNLOAD_LIMIT):
+            can_incremental = False
+
+        if not can_incremental:
+            if is_expired:
+                message_text += "⚠️ **此缓存已超过24小时，无法增量更新。**"
+            else:
+                 message_text += "⚠️ **此缓存文件大于20MB，无法增量更新。**"
             keyboard.append([InlineKeyboardButton("⬇️ 下载旧缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
         else:
             message_text += "请选择操作："
             keyboard.append([InlineKeyboardButton("🔄 增量更新", callback_data='cache_incremental')])
-            keyboard.append([InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
-        
+            if cache_type != 'local':
+                keyboard.append([InlineKeyboardButton("⬇️ 下载缓存", callback_data='cache_download'), InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
+            else:
+                 keyboard.append([InlineKeyboardButton("🔍 全新搜索", callback_data='cache_newsearch')])
+
         keyboard.append([InlineKeyboardButton("❌ 取消", callback_data='cache_cancel')])
         
         await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
@@ -399,9 +499,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   "`/backup` - 备份当前配置\n"
                   "`/restore` - 恢复配置\n"
                   "`/history` - 查看查询历史\n"
-                  "`/import` - 导入旧结果作为缓存\n"
-                  "  用法: **回复**一个文件, 然后输入:\n"
-                  "  `/import <查询语句> [可选数量]`\n\n"
+                  "`/import` - (回复文件) 导入TG缓存(<20MB)\n"
+                  "`/urlimport` - (链接) 导入大文件缓存\n"
+                  "  用法: `/urlimport <链接> <查询>`\n\n"
                   "*💻 系统管理 (仅管理员)*\n"
                   "`/getlog` - 获取机器人运行日志\n"
                   "`/shutdown` - 安全关闭机器人\n\n"
@@ -428,7 +528,6 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
     return STATE_SETTINGS_MAIN
 
-# ... (所有 settings, 下载任务, main 函数与上一版完全一致) ...
 async def settings_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); menu = query.data.split('_', 1)[1]
     if menu == 'api': await show_api_menu(update, context); return STATE_SETTINGS_ACTION
@@ -511,14 +610,24 @@ async def run_full_download_query(context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ 下载完成！共 {len(unique_results)} 条。正在发送...")
         with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
         os.remove(output_filename)
-        cache_data = {'file_id': sent_message.document.file_id, 'file_unique_id': sent_message.document.file_unique_id, 'file_name': output_filename, 'result_count': len(unique_results)}
+        cache_data = {
+            'file_id': sent_message.document.file_id, 
+            'file_unique_id': sent_message.document.file_unique_id, 
+            'file_name': output_filename, 
+            'file_size': os.path.getsize(sent_message.document.file_path) if sent_message.document.file_path else 0,
+            'result_count': len(unique_results)
+        }
         add_or_update_query(query_text, cache_data)
     elif not context.bot_data.get(stop_flag): await msg.edit_text("🤷‍♀️ 任务完成，但未能下载到任何数据。")
     context.bot_data.pop(stop_flag, None)
 
 async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
+    # This function remains largely the same, but the final caching part can be updated
+    # for brevity, I'll skip pasting the whole function and just note the change:
+    # After sending the document, the cache_data should also include file_size.
     job_data = context.job.data; bot = context.bot; chat_id, base_query = job_data['chat_id'], job_data['query']
     output_filename = f"fofa_traceback_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+    # ... (existing traceback logic) ...
     unique_results, page_count, last_page_date, termination_reason = set(), 0, None, ""
     msg = await bot.send_message(chat_id, "⏳ 开始深度追溯下载...")
     current_query = base_query; stop_flag = f'stop_job_{chat_id}'
@@ -558,9 +667,16 @@ async def run_traceback_download_query(context: ContextTypes.DEFAULT_TYPE):
     if unique_results:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(sorted(list(unique_results))))
         await msg.edit_text(f"✅ 深度追溯完成！共 {len(unique_results)} 条。{termination_reason}\n正在发送文件...")
+        file_size = os.path.getsize(output_filename)
         with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
         os.remove(output_filename)
-        cache_data = {'file_id': sent_message.document.file_id, 'file_unique_id': sent_message.document.file_unique_id, 'file_name': output_filename, 'result_count': len(unique_results)}
+        cache_data = {
+            'file_id': sent_message.document.file_id, 
+            'file_unique_id': sent_message.document.file_unique_id, 
+            'file_name': output_filename, 
+            'file_size': file_size,
+            'result_count': len(unique_results)
+        }
         add_or_update_query(base_query, cache_data)
     else: await msg.edit_text(f"🤷‍♀️ 任务完成，但未能下载到任何数据。{termination_reason}")
     context.bot_data.pop(stop_flag, None)
@@ -570,28 +686,54 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     chat_id, base_query = job_data['chat_id'], job_data['query']
     msg = await bot.send_message(chat_id, "--- 增量更新启动 ---")
     
-    await msg.edit_text("1/5: 正在获取旧缓存...")
     cached_item = find_cached_query(base_query)
     if not cached_item: await msg.edit_text("❌ 错误：找不到缓存项。"); return
     
-    old_file_path = f"old_{cached_item['cache']['file_name']}"; old_results = set()
-    try:
-        file = await bot.get_file(cached_item['cache']['file_id']); await file.download_to_drive(old_file_path)
-        with open(old_file_path, 'r', encoding='utf-8') as f: old_results = set(line.strip() for line in f if line.strip())
-        if not old_results: raise ValueError("缓存文件为空。")
-    except BadRequest:
-        await msg.edit_text("❌ **错误：缓存文件已无法下载**\n\n您导入的缓存文件可能超过了20MB，或者上传时间已超过24小时，机器人API无法下载它。\n\n请返回并选择 **🔍 全新搜索** 来获取最新数据。");
-        return
-    except Exception as e: await msg.edit_text(f"❌ 读取缓存文件失败: {e}"); return
+    cache_info = cached_item['cache']
+    old_file_path = f"old_{datetime.now().strftime('%Y%m%d%H%M%S')}_{cache_info.get('file_name', 'cache.txt')}"
+    old_results = set()
+    defer_cleanup_path = None 
+
+    if cache_info.get('cache_type') == 'local':
+        local_path = cache_info['local_path']
+        await msg.edit_text("1/5: 正在读取本地缓存文件...")
+        if not os.path.exists(local_path):
+            await msg.edit_text(f"❌ 错误: 之前关联的本地缓存文件 `{local_path}` 已不存在。"); return
+        try:
+            with open(local_path, 'r', encoding='utf-8') as f:
+                old_results = set(line.strip() for line in f if line.strip())
+        except Exception as e:
+            await msg.edit_text(f"❌ 读取本地缓存文件失败: {e}"); return
+    else:
+        await msg.edit_text("1/5: 正在从 Telegram 下载旧缓存...")
+        try:
+            file = await bot.get_file(cache_info['file_id'])
+            await file.download_to_drive(old_file_path)
+            with open(old_file_path, 'r', encoding='utf-8') as f:
+                old_results = set(line.strip() for line in f if line.strip())
+            defer_cleanup_path = old_file_path
+        except BadRequest:
+            # --- 优化后的错误提示 ---
+            error_msg = "❌ **错误：缓存文件已无法下载**\n\n"
+            if cache_info.get('file_size', 0) > TELEGRAM_DOWNLOAD_LIMIT:
+                error_msg += "原因: 此缓存文件大于 20MB，机器人无法下载它进行更新。\n请使用 `/urlimport` 命令导入大文件。"
+            else:
+                error_msg += "原因: 此缓存文件上传时间可能已超过24小时。\n请重新上传文件并使用 `/import` 命令，或使用 `/urlimport`。"
+            await msg.edit_text(error_msg); return
+        except Exception as e:
+            await msg.edit_text(f"❌ 读取缓存文件失败: {e}"); return
+
+    if not old_results:
+        await msg.edit_text("❌ 错误: 缓存文件为空，无法进行增量更新。"); return
     
     await msg.edit_text("2/5: 正在确定更新起始点...")
     sorted_old_results = sorted(list(old_results), reverse=True)
-    if not sorted_old_results: await msg.edit_text(f"❌ 缓存文件为空，无法确定起始点"); os.remove(old_file_path); return
+    if not sorted_old_results: await msg.edit_text(f"❌ 缓存文件为空，无法确定起始点"); return
     first_line = sorted_old_results[0]
     
     data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, f'host="{first_line}"', fields="lastupdatetime"))
     if error or not data.get('results'):
-        await msg.edit_text(f"❌ 无法获取最新记录时间戳: {error or '无结果'}"); os.remove(old_file_path); return
+        await msg.edit_text(f"❌ 无法获取最新记录时间戳: {error or '无结果'}"); return
 
     ts_str = data['results'][0] if not isinstance(data['results'][0], list) else data['results'][0][0]
     cutoff_date = ts_str.split(' ')[0]
@@ -599,18 +741,18 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     
     await msg.edit_text(f"3/5: 正在侦察自 {cutoff_date} 以来的新数据...")
     data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, incremental_query, size=1))
-    if error: await msg.edit_text(f"❌ 侦察查询失败: {error}"); os.remove(old_file_path); return
+    if error: await msg.edit_text(f"❌ 侦察查询失败: {error}"); return
 
     total_new_size = data.get('size', 0)
-    if total_new_size == 0: await msg.edit_text("✅ 未发现新数据。缓存已是最新。"); os.remove(old_file_path); return
+    if total_new_size == 0: await msg.edit_text("✅ 未发现新数据。缓存已是最新。"); return
     
     new_results = set(); stop_flag = f'stop_job_{chat_id}'
     pages_to_fetch = (total_new_size + 9999) // 10000
     for page in range(1, pages_to_fetch + 1):
-        if context.bot_data.get(stop_flag): await msg.edit_text("🌀 增量更新已手动停止。"); os.remove(old_file_path); return
+        if context.bot_data.get(stop_flag): await msg.edit_text("🌀 增量更新已手动停止。"); return
         await msg.edit_text(f"3/5: 正在下载新数据... ( Page {page}/{pages_to_fetch} )")
         data, _, error = await execute_query_with_fallback(lambda key: fetch_fofa_data(key, incremental_query, page=page, page_size=10000))
-        if error: await msg.edit_text(f"❌ 下载新数据失败: {error}"); os.remove(old_file_path); return
+        if error: await msg.edit_text(f"❌ 下载新数据失败: {error}"); return
         if data.get('results'): new_results.update(data.get('results', []))
 
     await msg.edit_text(f"4/5: 正在合并数据... (发现 {len(new_results)} 条新数据)")
@@ -619,21 +761,34 @@ async def run_incremental_update_query(context: ContextTypes.DEFAULT_TYPE):
     output_filename = f"fofa_updated_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
     with open(output_filename, 'w', encoding='utf-8') as f: f.write("\n".join(combined_results))
     await msg.edit_text(f"5/5: 发送更新后的文件... (共 {len(combined_results)} 条)")
+    
+    output_filesize = os.path.getsize(output_filename)
     with open(output_filename, 'rb') as doc: sent_message = await bot.send_document(chat_id, document=doc, filename=output_filename)
     
-    cache_data = {'file_id': sent_message.document.file_id, 'file_unique_id': sent_message.document.file_unique_id, 'file_name': output_filename, 'result_count': len(combined_results)}
-    add_or_update_query(base_query, cache_data)
+    new_cache_data = {
+        'file_id': sent_message.document.file_id, 
+        'file_unique_id': sent_message.document.file_unique_id, 
+        'file_name': output_filename, 
+        'file_size': output_filesize,
+        'result_count': len(combined_results)
+    }
+    # 更新后的文件总是TG缓存，而不是本地缓存
+    if new_cache_data.get('cache_type'):
+        del new_cache_data['cache_type']
+    if new_cache_data.get('local_path'):
+        del new_cache_data['local_path']
+        
+    add_or_update_query(base_query, new_cache_data)
     
-    os.remove(old_file_path); os.remove(output_filename)
+    if defer_cleanup_path and os.path.exists(defer_cleanup_path): os.remove(defer_cleanup_path)
+    if os.path.exists(output_filename): os.remove(output_filename)
+
     await msg.delete()
     await bot.send_message(chat_id, f"✅ 增量更新完成！")
 
 
 async def main() -> None:
     try:
-        # --- TOKEN 已更新 ---
-        # 我已经用您提供的新 Token 替换了原来的。
-        # 为了安全，请立即撤销这个已泄露的 Token 并换上一个全新的。
         TELEGRAM_BOT_TOKEN = "8325002891:AAGSa4RdRWdDd5p6JdCYB79cmvHSSE-_UNc"
     except Exception as e:
         logger.error(f"无法设置 Bot Token！错误: {e}")
@@ -654,6 +809,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("restore", restore_config_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("import", import_command))
+    application.add_handler(CommandHandler("urlimport", url_import_command))
     application.add_handler(CommandHandler("getlog", get_log_command))
     application.add_handler(CommandHandler("shutdown", shutdown_command))
     application.add_handler(settings_conv)
@@ -665,7 +821,9 @@ async def main() -> None:
         await application.bot.set_my_commands([ 
             BotCommand("start", "🚀 启动机器人"), BotCommand("kkfofa", "🔍 资产搜索"), 
             BotCommand("settings", "⚙️ 设置"), BotCommand("history", "🕰️ 查询历史"), 
-            BotCommand("import", "🖇️ 导入旧缓存"), BotCommand("backup", "📤 备份配置"), 
+            BotCommand("import", "🖇️ 导入TG缓存(<20MB)"), 
+            BotCommand("urlimport", "🔗 导入大文件缓存"),
+            BotCommand("backup", "📤 备份配置"), 
             BotCommand("restore", "📥 恢复配置"), BotCommand("getlog", "📄 获取日志"),
             BotCommand("shutdown", "🔌 关闭机器人"), BotCommand("stop", "🛑 停止任务"), 
             BotCommand("help", "❓ 帮助"), BotCommand("cancel", "❌ 取消操作")])
@@ -688,3 +846,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("程序被强制退出。")
+
